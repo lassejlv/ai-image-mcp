@@ -8,6 +8,7 @@ mod tokens;
 use std::path::PathBuf;
 
 use anyhow::{Context, bail};
+use serde::Serialize;
 use tokio::sync::Mutex;
 
 pub use tokens::OAuthTokens;
@@ -50,7 +51,7 @@ impl Issuer {
 }
 
 /// The verification step a person completes in a browser during device-code login.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DevicePrompt {
     pub verification_uri: String,
     pub user_code: String,
@@ -114,6 +115,13 @@ impl OAuthGrant {
         self.file.path().is_file()
     }
 
+    fn method(&self) -> AuthMethod {
+        match &self.file {
+            TokenFile::Own(_) => AuthMethod::Login,
+            TokenFile::CodexCli(_) => AuthMethod::CodexCli,
+        }
+    }
+
     fn describe(&self) -> String {
         match &self.file {
             TokenFile::Own(_) => format!("{} login", self.issuer.display_name()),
@@ -171,6 +179,13 @@ impl Credential {
         }
     }
 
+    fn method(&self) -> AuthMethod {
+        match self {
+            Self::ApiKey(_) => AuthMethod::ApiKey,
+            Self::OAuth(grant) => grant.method(),
+        }
+    }
+
     fn describe(&self) -> String {
         match self {
             Self::ApiKey(key) if key.literal.is_some() => "API key from config".to_owned(),
@@ -190,11 +205,28 @@ pub struct Bearer {
     pub refreshable: bool,
 }
 
+/// Which kind of credential a provider is using.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMethod {
+    ApiKey,
+    /// A login made with `ai-image-mcp login`.
+    Login,
+    /// The Codex CLI's own login.
+    CodexCli,
+}
+
 /// Whether a provider can authenticate right now, and how.
 #[derive(Debug, Clone)]
 pub struct AuthStatus {
-    pub ready: bool,
+    pub method: Option<AuthMethod>,
     pub detail: String,
+}
+
+impl AuthStatus {
+    pub fn ready(&self) -> bool {
+        self.method.is_some()
+    }
 }
 
 /// The credentials a provider accepts, tried in order; the first available one is used.
@@ -219,11 +251,11 @@ impl Auth {
     pub fn status(&self) -> AuthStatus {
         match self.active() {
             Some(credential) => AuthStatus {
-                ready: true,
+                method: Some(credential.method()),
                 detail: credential.describe(),
             },
             None => AuthStatus {
-                ready: false,
+                method: None,
                 detail: format!("not connected: {}", self.setup_hint),
             },
         }

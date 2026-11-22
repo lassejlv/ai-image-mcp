@@ -15,7 +15,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::auth::{ApiKey, Auth, Bearer, Credential, Issuer, OAuthGrant};
+use crate::auth::{ApiKey, Auth, AuthMethod, Bearer, Credential, Issuer, OAuthGrant};
 use crate::config::{AuthMode, Config, Paths, ProviderConfig, expand_home};
 use crate::http;
 use crate::image::{GeneratedImage, ImageRequest, ImageSettings, InputImage, Setting};
@@ -128,6 +128,15 @@ impl ProviderKind {
         }
     }
 
+    /// The `ai-image-mcp login` account that connects this provider type.
+    pub fn login_account(self) -> Option<&'static str> {
+        match self {
+            Self::Xai => Some("xai"),
+            Self::Codex => Some("codex"),
+            Self::OpenAi | Self::Gemini | Self::Fal => None,
+        }
+    }
+
     fn api_key_env(self) -> &'static str {
         match self {
             Self::Xai => "XAI_API_KEY",
@@ -223,6 +232,11 @@ pub struct ProviderInfo {
     pub kind: ProviderKind,
     pub ready: bool,
     pub auth: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_method: Option<AuthMethod>,
+    /// The account `ai-image-mcp login <account>` connects for this provider, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login: Option<&'static str>,
     pub default: bool,
     pub default_model: String,
     pub suggested_models: Vec<&'static str>,
@@ -254,7 +268,7 @@ impl Entry {
     }
 
     pub fn is_ready(&self) -> bool {
-        self.client().auth.status().ready
+        self.client().auth.status().ready()
     }
 
     pub fn info(&self, is_default: bool) -> ProviderInfo {
@@ -262,8 +276,10 @@ impl Entry {
         ProviderInfo {
             name: self.name.clone(),
             kind: self.kind,
-            ready: status.ready,
+            ready: status.ready(),
             auth: status.detail,
+            auth_method: status.method,
+            login: self.kind.login_account(),
             default: is_default,
             default_model: self.model.clone(),
             suggested_models: self.kind.known_models().to_vec(),
@@ -387,28 +403,28 @@ impl Registry {
 
 fn build_entry(name: &str, cfg: ProviderConfig, paths: &Paths) -> anyhow::Result<Entry> {
     let kind = cfg.kind;
+    let env = cfg
+        .api_key_env
+        .clone()
+        .unwrap_or_else(|| kind.api_key_env().to_owned());
     let api_key = || {
         Credential::ApiKey(ApiKey {
             literal: cfg.api_key.clone(),
-            env: cfg
-                .api_key_env
-                .clone()
-                .unwrap_or_else(|| kind.api_key_env().to_owned()),
+            env: env.clone(),
         })
     };
     let (credentials, hint) = match kind {
         ProviderKind::Xai => {
             let oauth =
                 || Credential::OAuth(OAuthGrant::own(Issuer::Xai, paths.token_file(Issuer::Xai)));
-            let credentials = match cfg.auth {
-                AuthMode::Oauth => vec![oauth()],
-                AuthMode::ApiKey => vec![api_key()],
-                _ => vec![oauth(), api_key()],
-            };
-            (
-                credentials,
-                "run `ai-image-mcp login xai` or set XAI_API_KEY".to_owned(),
-            )
+            match cfg.auth {
+                AuthMode::Oauth => (vec![oauth()], "run `ai-image-mcp login xai`".to_owned()),
+                AuthMode::ApiKey => (vec![api_key()], format!("set {env}")),
+                _ => (
+                    vec![oauth(), api_key()],
+                    format!("run `ai-image-mcp login xai` or set {env}"),
+                ),
+            }
         }
         ProviderKind::Codex => {
             let own = || {
@@ -433,10 +449,6 @@ fn build_entry(name: &str, cfg: ProviderConfig, paths: &Paths) -> anyhow::Result
             )
         }
         ProviderKind::OpenAi | ProviderKind::Gemini | ProviderKind::Fal => {
-            let env = cfg
-                .api_key_env
-                .clone()
-                .unwrap_or_else(|| kind.api_key_env().to_owned());
             (vec![api_key()], format!("set {env}"))
         }
     };

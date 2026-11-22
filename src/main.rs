@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use ai_image_mcp::app::{App, GenerateImageArgs};
 use ai_image_mcp::auth::{self, Issuer};
 use ai_image_mcp::config::Paths;
+use ai_image_mcp::dashboard;
 use ai_image_mcp::image::ImageSettings;
 use ai_image_mcp::server::ImageServer;
 use anyhow::Context;
@@ -33,6 +34,12 @@ enum Command {
     Providers,
     /// Generate an image from the command line, to try a provider.
     Generate(Box<GenerateCommand>),
+    /// Open a local web dashboard for providers, generation, and saved images.
+    Dashboard {
+        /// Port on 127.0.0.1 to listen on.
+        #[arg(long, default_value_t = 7878)]
+        port: u16,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -129,11 +136,13 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
+    let paths = Paths::from_env()?;
+    let config = cli.config.as_deref();
     match cli.command.unwrap_or(Command::Serve) {
-        Command::Serve => serve(App::load(cli.config.as_deref())?).await,
-        Command::Login { account } => login(account).await,
+        Command::Serve => serve(App::load(config, &paths)?).await,
+        Command::Login { account } => login(account, &paths).await,
         Command::Logout { account } => {
-            let path = Paths::from_env()?.token_file(account.issuer());
+            let path = paths.token_file(account.issuer());
             if auth::logout(&path)? {
                 println!("Removed the {} login.", account.issuer().display_name());
             } else {
@@ -142,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Providers => {
-            for info in App::load(cli.config.as_deref())?.providers() {
+            for info in App::load(config, &paths)?.providers() {
                 let marker = if info.default { " (default)" } else { "" };
                 let state = if info.ready { "ready" } else { "off" };
                 println!(
@@ -156,10 +165,13 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Generate(command) => {
-            let app = App::load(cli.config.as_deref())?;
+            let app = App::load(config, &paths)?;
             let outcome = app.generate(command.into_args()?).await?;
             println!("{}", outcome.summary());
             Ok(())
+        }
+        Command::Dashboard { port } => {
+            dashboard::serve(App::load(config, &paths)?, paths, port).await
         }
     }
 }
@@ -173,9 +185,9 @@ async fn serve(app: App) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn login(account: Account) -> anyhow::Result<()> {
+async fn login(account: Account, paths: &Paths) -> anyhow::Result<()> {
     let issuer = account.issuer();
-    let path = Paths::from_env()?.token_file(issuer);
+    let path = paths.token_file(issuer);
     let http = reqwest::Client::builder()
         .user_agent(concat!("ai-image-mcp/", env!("CARGO_PKG_VERSION")))
         .build()?;

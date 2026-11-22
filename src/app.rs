@@ -80,15 +80,19 @@ impl App {
         })
     }
 
-    /// Loads `config.toml` from `config_path`, or from the default location.
-    pub fn load(config_path: Option<&Path>) -> anyhow::Result<Self> {
-        let paths = Paths::from_env()?;
+    /// Loads `config.toml` from `config_path`, or from its default location under `paths`.
+    pub fn load(config_path: Option<&Path>, paths: &Paths) -> anyhow::Result<Self> {
         let config_path = config_path.map_or_else(|| paths.config_file(), Path::to_path_buf);
-        Self::new(&Config::load(&config_path)?, &paths)
+        Self::new(&Config::load(&config_path)?, paths)
     }
 
     pub fn providers(&self) -> Vec<ProviderInfo> {
         self.registry.infos()
+    }
+
+    /// Where images are saved when a request names no directory.
+    pub fn output_dir(&self) -> PathBuf {
+        self.output.dir()
     }
 
     pub async fn generate(&self, args: GenerateImageArgs) -> anyhow::Result<Outcome> {

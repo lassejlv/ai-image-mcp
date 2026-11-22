@@ -33,6 +33,14 @@ If you already use the Codex CLI, `codex login` is enough: the `codex` provider 
 
 API-key providers read their key from the environment variable in the table above, or from `api_key_env` / `api_key` in the config file.
 
+## Dashboard
+
+```sh
+ai-image-mcp dashboard            # http://127.0.0.1:7878
+```
+
+A small local web UI: connect xAI or ChatGPT with the same device login, see which providers are ready, generate with any provider, model, and setting (including reference images), and browse what has been saved. It listens on loopback only and refuses requests for any other host name.
+
 ## Add it to your MCP client
 
 Claude Code:
@@ -113,7 +121,7 @@ cargo test
 
 ```
 src/
-  main.rs          CLI: serve, login, logout, providers, generate
+  main.rs          CLI: serve, dashboard, login, logout, providers, generate
   server.rs        MCP tools on rmcp
   app.rs           request pipeline shared by the server and the CLI
   config.rs        config.toml and on-disk locations
@@ -122,7 +130,9 @@ src/
   http.rs          error and download helpers
   auth/            API keys, OAuth grants, xAI and ChatGPT device logins
   providers/       one module per provider type, plus the registry
+  dashboard/       local web dashboard: axum routes and static assets
 tests/
   providers.rs     every provider against a mock HTTP server
   mcp.rs           an rmcp client driving the server end to end
+  dashboard.rs     the dashboard's HTTP API
 ```
