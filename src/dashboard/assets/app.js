@@ -65,7 +65,7 @@ function route() {
 async function loadProviders() {
   const data = await api("/api/providers");
   state.providers = data.providers;
-  $("#output-dir").textContent = data.output_dir;
+  $("#storage").textContent = data.storage;
   renderProviderSelect();
   renderProviderList();
 }

@@ -29,7 +29,7 @@ async fn tools_are_listed_and_generate_image_returns_files_and_data() {
             out.display(),
             api.uri()
         ),
-    );
+    ).await;
 
     let (server_io, client_io) = tokio::io::duplex(1 << 20);
     tokio::spawn(async move {

@@ -3,16 +3,15 @@
 pub mod chatgpt;
 pub mod xai;
 
+mod store;
 mod tokens;
-
-use std::path::PathBuf;
 
 use anyhow::{Context, bail};
 use serde::Serialize;
 use tokio::sync::Mutex;
 
-pub use tokens::OAuthTokens;
-use tokens::TokenFile;
+pub use store::TokenStore;
+pub use tokens::{OAuthTokens, TokenFile};
 
 /// An account system this server can log in to with the device-code flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,75 +56,51 @@ pub struct DevicePrompt {
     pub user_code: String,
 }
 
-/// Runs the device-code login for `issuer` and saves the grant to `path`.
+/// Runs the device-code login for `issuer` and returns the grant for the caller to store.
 ///
 /// `on_prompt` receives the URL and code to show the person while the flow polls.
 pub async fn login(
     issuer: Issuer,
     http: &reqwest::Client,
-    path: PathBuf,
     on_prompt: impl FnOnce(&DevicePrompt),
 ) -> anyhow::Result<OAuthTokens> {
-    let tokens = match issuer {
-        Issuer::Xai => xai::device_login(http, on_prompt).await?,
-        Issuer::ChatGpt => chatgpt::device_login(http, on_prompt).await?,
-    };
-    TokenFile::Own(path).save(&tokens)?;
-    Ok(tokens)
-}
-
-/// Deletes a saved login. Returns false when there was none.
-pub fn logout(path: &std::path::Path) -> anyhow::Result<bool> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e).with_context(|| format!("removing {}", path.display())),
+    match issuer {
+        Issuer::Xai => xai::device_login(http, on_prompt).await,
+        Issuer::ChatGpt => chatgpt::device_login(http, on_prompt).await,
     }
 }
 
-/// An OAuth grant on disk, refreshed on demand and written back after each refresh.
+/// An OAuth grant, refreshed on demand and written back after each refresh.
 #[derive(Debug)]
 pub struct OAuthGrant {
     issuer: Issuer,
-    file: TokenFile,
+    store: TokenStore,
     /// Refresh tokens rotate on use, so refreshes must never run concurrently.
     refresh_lock: Mutex<()>,
 }
 
 impl OAuthGrant {
-    /// A grant created by `ai-image-mcp login`.
-    pub fn own(issuer: Issuer, path: PathBuf) -> Self {
-        Self::new(issuer, TokenFile::Own(path))
-    }
-
-    /// The grant the Codex CLI keeps in `$CODEX_HOME/auth.json`, shared with it.
-    pub fn codex_cli(path: PathBuf) -> Self {
-        Self::new(Issuer::ChatGpt, TokenFile::CodexCli(path))
-    }
-
-    fn new(issuer: Issuer, file: TokenFile) -> Self {
+    pub fn new(issuer: Issuer, store: TokenStore) -> Self {
         Self {
             issuer,
-            file,
+            store,
             refresh_lock: Mutex::new(()),
         }
     }
 
-    pub fn is_present(&self) -> bool {
-        self.file.path().is_file()
-    }
-
     fn method(&self) -> AuthMethod {
-        match &self.file {
-            TokenFile::Own(_) => AuthMethod::Login,
-            TokenFile::CodexCli(_) => AuthMethod::CodexCli,
+        match &self.store {
+            TokenStore::File(TokenFile::CodexCli(_)) => AuthMethod::CodexCli,
+            _ => AuthMethod::Login,
         }
     }
 
     fn describe(&self) -> String {
-        match &self.file {
-            TokenFile::Own(_) => format!("{} login", self.issuer.display_name()),
-            TokenFile::CodexCli(path) => format!("Codex CLI login ({})", path.display()),
+        match &self.store {
+            TokenStore::File(TokenFile::CodexCli(path)) => {
+                format!("Codex CLI login ({})", path.display())
+            }
+            _ => format!("{} login", self.issuer.display_name()),
         }
     }
 
@@ -135,16 +110,17 @@ impl OAuthGrant {
         force_refresh: bool,
     ) -> anyhow::Result<OAuthTokens> {
         let _guard = self.refresh_lock.lock().await;
-        let tokens = self.file.load()?;
-        if !force_refresh && !tokens.expires_soon() {
-            return Ok(tokens);
-        }
-        let refreshed =
-            self.issuer.refresh(http, &tokens).await.with_context(|| {
-                format!("refreshing the {} failed; log in again", self.describe())
-            })?;
-        self.file.save(&refreshed)?;
-        Ok(refreshed)
+        self.store
+            .update(|tokens| async move {
+                if !force_refresh && !tokens.expires_soon() {
+                    return Ok(None);
+                }
+                let refreshed = self.issuer.refresh(http, &tokens).await.with_context(|| {
+                    format!("refreshing the {} failed; log in again", self.describe())
+                })?;
+                Ok(Some(refreshed))
+            })
+            .await
     }
 }
 
@@ -172,10 +148,10 @@ pub enum Credential {
 }
 
 impl Credential {
-    fn is_available(&self) -> bool {
+    async fn is_available(&self) -> anyhow::Result<bool> {
         match self {
-            Self::ApiKey(key) => key.value().is_some(),
-            Self::OAuth(grant) => grant.is_present(),
+            Self::ApiKey(key) => Ok(key.value().is_some()),
+            Self::OAuth(grant) => grant.store.exists().await,
         }
     }
 
@@ -244,19 +220,28 @@ impl Auth {
         }
     }
 
-    fn active(&self) -> Option<&Credential> {
-        self.credentials.iter().find(|c| c.is_available())
+    async fn active(&self) -> anyhow::Result<Option<&Credential>> {
+        for credential in &self.credentials {
+            if credential.is_available().await? {
+                return Ok(Some(credential));
+            }
+        }
+        Ok(None)
     }
 
-    pub fn status(&self) -> AuthStatus {
-        match self.active() {
-            Some(credential) => AuthStatus {
+    pub async fn status(&self) -> AuthStatus {
+        match self.active().await {
+            Ok(Some(credential)) => AuthStatus {
                 method: Some(credential.method()),
                 detail: credential.describe(),
             },
-            None => AuthStatus {
+            Ok(None) => AuthStatus {
                 method: None,
                 detail: format!("not connected: {}", self.setup_hint),
+            },
+            Err(error) => AuthStatus {
+                method: None,
+                detail: format!("credential check failed: {error:#}"),
             },
         }
     }
@@ -267,7 +252,7 @@ impl Auth {
         http: &reqwest::Client,
         force_refresh: bool,
     ) -> anyhow::Result<Bearer> {
-        let Some(credential) = self.active() else {
+        let Some(credential) = self.active().await? else {
             bail!("not connected: {}", self.setup_hint);
         };
         match credential {

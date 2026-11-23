@@ -1,4 +1,4 @@
-//! OAuth token storage: this server's own files and the Codex CLI's `auth.json`.
+//! OAuth tokens and their file formats: this server's own files and the Codex CLI's `auth.json`.
 
 use std::fs;
 use std::io::Write;
