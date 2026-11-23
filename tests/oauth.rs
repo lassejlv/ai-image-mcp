@@ -7,7 +7,9 @@ use ai_image_mcp::oauth::{OAuthConfig, pkce_challenge};
 use ai_image_mcp::remote;
 use common::app;
 use reqwest::StatusCode;
-use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, LOCATION, WWW_AUTHENTICATE};
+use reqwest::header::{
+    ACCEPT, AUTHORIZATION, CONTENT_TYPE, COOKIE, LOCATION, SET_COOKIE, WWW_AUTHENTICATE,
+};
 use serde_json::{Value, json};
 
 const VERIFIER: &str = "correct-horse-battery-staple-correct-horse-battery";
@@ -245,6 +247,105 @@ async fn full_oauth_flow_grants_access_to_mcp() {
         refresh_as_access.status(),
         StatusCode::UNAUTHORIZED,
         "a refresh token is not an access token"
+    );
+}
+
+#[tokio::test]
+async fn dashboard_requires_its_own_sign_in() {
+    let base = start(Some(credentials())).await;
+    let http = http();
+
+    let bare = http.get(format!("{base}/dashboard")).send().await.unwrap();
+    assert_eq!(bare.headers()[LOCATION], "/dashboard/login");
+    let page = http.get(format!("{base}/dashboard/")).send().await.unwrap();
+    assert_eq!(page.status(), StatusCode::SEE_OTHER);
+    assert_eq!(page.headers()[LOCATION], "/dashboard/login");
+    let api = http
+        .get(format!("{base}/dashboard/api/providers"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(api.status(), StatusCode::UNAUTHORIZED);
+    let login = http
+        .get(format!("{base}/dashboard/login"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+
+    let sign_in = |password: &'static str| {
+        http.post(format!("{base}/dashboard/login"))
+            .form(&[("username", "lasse"), ("password", password)])
+            .send()
+    };
+    let wrong = sign_in("nope").await.unwrap();
+    assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+    assert!(wrong.headers().get(SET_COOKIE).is_none());
+
+    let signed_in = sign_in("s3cret-pass").await.unwrap();
+    assert_eq!(signed_in.status(), StatusCode::SEE_OTHER);
+    let cookie = signed_in.headers()[SET_COOKIE].to_str().unwrap().to_owned();
+    assert!(
+        cookie.contains("HttpOnly")
+            && cookie.contains("SameSite=Strict")
+            && cookie.contains("Path=/dashboard"),
+        "{cookie}"
+    );
+    let session = cookie.split(';').next().unwrap().to_owned();
+
+    let providers: Value = http
+        .get(format!("{base}/dashboard/api/providers"))
+        .header(COOKIE, &session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(providers["sign_out"], true);
+    let bare = http
+        .get(format!("{base}/dashboard"))
+        .header(COOKIE, &session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        bare.headers()[LOCATION],
+        "/dashboard/",
+        "signed in, the bare path opens the dashboard"
+    );
+    let index = http
+        .get(format!("{base}/dashboard/"))
+        .header(COOKIE, &session)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        index
+            .text()
+            .await
+            .unwrap()
+            .contains("<title>ai-image-mcp</title>")
+    );
+
+    let token = session.split_once('=').unwrap().1;
+    assert_eq!(
+        initialize(&http, &base, Some(token)).await.status(),
+        StatusCode::UNAUTHORIZED,
+        "a session is not an access token"
+    );
+
+    let signed_out = http
+        .post(format!("{base}/dashboard/logout"))
+        .header(COOKIE, &session)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        signed_out.headers()[SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .contains("Max-Age=0")
     );
 }
 

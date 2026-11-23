@@ -28,8 +28,8 @@ pub struct ImageServer {
 
 #[tool_router]
 impl ImageServer {
-    pub fn new(app: App) -> Self {
-        Self { app: Arc::new(app) }
+    pub fn new(app: impl Into<Arc<App>>) -> Self {
+        Self { app: app.into() }
     }
 
     #[tool(

@@ -93,6 +93,8 @@ ai-image-mcp serve --http --bind 0.0.0.0:8080 --public-url https://images.exampl
 
 Then add `https://images.example.com/mcp` as a remote MCP server in your client.
 
+The same server hosts the [dashboard](#dashboard) at `https://images.example.com/dashboard/`. It sits behind a sign-in with the same username and password, which sets an HttpOnly, SameSite=Strict session cookie that lasts 7 days.
+
 | Variable / flag | Meaning |
 | --- | --- |
 | `AI_IMAGE_MCP_AUTH_USERNAME`, `AI_IMAGE_MCP_AUTH_PASSWORD` | The sign-in. Set both to require OAuth on `/mcp`. |

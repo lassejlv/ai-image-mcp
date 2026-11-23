@@ -30,7 +30,7 @@ async fn dashboard_generates_lists_and_serves_images() {
     ).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let router = dashboard::router(app);
+    let router = dashboard::local_router(app);
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let http = reqwest::Client::new();
 
@@ -57,7 +57,7 @@ async fn dashboard_generates_lists_and_serves_images() {
         .json()
         .await
         .unwrap();
-    assert_eq!(generated["urls"], json!(["/images/fox.png"]), "{generated}");
+    assert_eq!(generated["urls"], json!(["images/fox.png"]), "{generated}");
     assert!(
         out.join("fox.png").is_file(),
         "output_dir from the browser must be ignored"

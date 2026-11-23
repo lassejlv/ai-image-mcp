@@ -92,6 +92,10 @@ nav {
   gap: 4px;
 }
 
+.sign-out {
+  margin-left: auto;
+}
+
 nav a {
   padding: 6px 10px;
   border-radius: 6px;

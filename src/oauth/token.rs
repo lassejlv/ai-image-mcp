@@ -37,6 +37,10 @@ pub enum Claims {
         client_id: String,
         exp: i64,
     },
+    /// A signed-in dashboard browser session, carried in a cookie.
+    Session {
+        exp: i64,
+    },
 }
 
 /// Signs and verifies [`Claims`] with one HMAC key.
