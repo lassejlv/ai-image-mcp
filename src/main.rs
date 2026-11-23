@@ -1,17 +1,20 @@
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
 use ai_image_mcp::app::{App, GenerateImageArgs};
 use ai_image_mcp::auth::{self, Issuer};
 use ai_image_mcp::config::Paths;
-use ai_image_mcp::dashboard;
 use ai_image_mcp::image::ImageSettings;
 use ai_image_mcp::server::ImageServer;
+use ai_image_mcp::{dashboard, remote};
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use rmcp::ServiceExt;
 use tracing_subscriber::EnvFilter;
 
 /// Image generation MCP server for xAI, ChatGPT/Codex, OpenAI, Gemini, and fal.
+const DEFAULT_BIND: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);
+
 #[derive(Debug, Parser)]
 #[command(version, about)]
 struct Cli {
@@ -24,8 +27,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Run the MCP server over stdio (the default).
-    Serve,
+    /// Run the MCP server, over stdio by default.
+    Serve(ServeArgs),
     /// Connect a subscription by signing in through the browser.
     Login { account: Account },
     /// Remove a saved login.
@@ -40,6 +43,20 @@ enum Command {
         #[arg(long, default_value_t = 7878)]
         port: u16,
     },
+}
+
+#[derive(Debug, Default, clap::Args)]
+struct ServeArgs {
+    /// Serve MCP over streamable HTTP at /mcp instead of stdio. Requires an OAuth sign-in
+    /// when AI_IMAGE_MCP_AUTH_USERNAME and AI_IMAGE_MCP_AUTH_PASSWORD are set.
+    #[arg(long)]
+    http: bool,
+    /// Address to listen on with --http.
+    #[arg(long, env = "AI_IMAGE_MCP_BIND", default_value = "127.0.0.1:8080")]
+    bind: Option<SocketAddr>,
+    /// URL clients reach the server at, when behind a proxy. Defaults to http://<bind>.
+    #[arg(long, env = "AI_IMAGE_MCP_PUBLIC_URL")]
+    public_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -138,8 +155,19 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let paths = Paths::from_env()?;
     let config = cli.config.as_deref();
-    match cli.command.unwrap_or(Command::Serve) {
-        Command::Serve => serve(App::load(config, &paths).await?).await,
+    match cli
+        .command
+        .unwrap_or_else(|| Command::Serve(ServeArgs::default()))
+    {
+        Command::Serve(args) => {
+            let app = App::load(config, &paths).await?;
+            if args.http {
+                let bind = args.bind.unwrap_or(DEFAULT_BIND);
+                remote::serve(app, bind, args.public_url).await
+            } else {
+                serve(app).await
+            }
+        }
         Command::Login { account } => login(account, &App::load(config, &paths).await?).await,
         Command::Logout { account } => {
             let app = App::load(config, &paths).await?;

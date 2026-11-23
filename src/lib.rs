@@ -7,7 +7,9 @@ pub mod config;
 pub mod dashboard;
 pub mod image;
 pub mod media;
+pub mod oauth;
 pub mod providers;
+pub mod remote;
 pub mod server;
 pub mod storage;
 

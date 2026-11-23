@@ -27,7 +27,7 @@ docker run -it --rm -v ai-image-mcp:/data ghcr.io/lassejlv/ai-image-mcp login xa
 docker run -i --rm -v ai-image-mcp:/data -v ~/Pictures/ai-image-mcp:/home/nonroot/ai-image-mcp ghcr.io/lassejlv/ai-image-mcp
 ```
 
-The `/data` volume keeps the config and saved logins. Generated images go to `/home/nonroot/ai-image-mcp` inside the container, so mount a host folder there that UID 65532 can write to. Pass API keys with `-e OPENAI_API_KEY`.
+The `/data` volume keeps the config and saved logins. Generated images go to `/home/nonroot/ai-image-mcp` inside the container, so mount a host folder there that UID 65532 can write to. Pass API keys with `-e OPENAI_API_KEY`. To serve remote clients over HTTP, see [Remote access](#remote-access-over-http-with-oauth) and add `-p 8080:8080` with `serve --http --bind 0.0.0.0:8080`.
 
 ## Connect a provider
 
@@ -79,6 +79,28 @@ Claude Desktop, Cursor, and other JSON-configured clients:
   }
 }
 ```
+
+## Remote access over HTTP with OAuth
+
+`serve --http` serves MCP over streamable HTTP at `/mcp`, so clients on other machines (Claude, ChatGPT connectors, Cursor) can connect by URL. Set a username and password, and the server runs its own OAuth 2.1 authorization server, the flow MCP clients expect. Clients discover it, register themselves, and send you to a sign-in page:
+
+```sh
+export AI_IMAGE_MCP_AUTH_USERNAME=lasse
+export AI_IMAGE_MCP_AUTH_PASSWORD='a long passphrase'
+export AI_IMAGE_MCP_AUTH_SECRET="$(openssl rand -hex 32)"   # keeps sign-ins valid across restarts
+ai-image-mcp serve --http --bind 0.0.0.0:8080 --public-url https://images.example.com
+```
+
+Then add `https://images.example.com/mcp` as a remote MCP server in your client.
+
+| Variable / flag | Meaning |
+| --- | --- |
+| `AI_IMAGE_MCP_AUTH_USERNAME`, `AI_IMAGE_MCP_AUTH_PASSWORD` | The sign-in. Set both to require OAuth on `/mcp`. |
+| `AI_IMAGE_MCP_AUTH_SECRET` | Key that signs client registrations and tokens. Without it a random key is used, and everyone signs in again after a restart. |
+| `--bind` / `AI_IMAGE_MCP_BIND` | Listen address, default `127.0.0.1:8080`. |
+| `--public-url` / `AI_IMAGE_MCP_PUBLIC_URL` | The URL clients use, when behind a proxy or TLS terminator. Defaults to `http://<bind>`. |
+
+Access tokens last an hour, and refresh tokens last 30 days. Client ids, codes, and tokens are HMAC-signed, so nothing is stored server-side. PKCE (S256) is required, redirects must go to https, loopback, or an app's own URL scheme, and each failed sign-in is delayed by a second. Without credentials, the server refuses to listen on anything but loopback.
 
 ## Tools
 
@@ -146,7 +168,9 @@ The Postgres tests run when `AI_IMAGE_MCP_TEST_DATABASE_URL` points at a server 
 ```
 migrations/        SQL migrations, embedded and run on startup
 src/
-  main.rs          CLI: serve, dashboard, login, logout, providers, generate
+  main.rs          CLI: serve (stdio or --http), dashboard, login, logout, providers, generate
+  remote.rs        MCP over streamable HTTP
+  oauth/           built-in OAuth 2.1 server: metadata, registration, sign-in, tokens
   server.rs        MCP tools on rmcp
   app.rs           request pipeline shared by the server and the CLI
   config.rs        config.toml and on-disk locations
@@ -162,4 +186,5 @@ tests/
   mcp.rs           an rmcp client driving the server end to end
   dashboard.rs     the dashboard's HTTP API
   postgres.rs      Postgres storage (needs AI_IMAGE_MCP_TEST_DATABASE_URL)
+  oauth.rs         the HTTP transport's OAuth flow end to end
 ```
