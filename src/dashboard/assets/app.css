@@ -74,8 +74,17 @@ body {
 }
 
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 15px;
   font-weight: 500;
+}
+
+.mark {
+  width: 18px;
+  height: 18px;
+  color: var(--fg);
 }
 
 nav {

@@ -4,12 +4,27 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ai-image-mcp</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/app.css" />
     <script src="/app.js" defer></script>
   </head>
   <body>
     <header class="top">
-      <span class="brand">ai-image-mcp</span>
+      <span class="brand">
+        <svg class="mark" viewBox="200 200 625 625" fill="none" aria-hidden="true">
+          <defs>
+          <mask id="cut-a"><rect width="1024" height="1024" fill="#fff"/><rect x="294" y="294" width="437" height="437" rx="96" fill="#000"/></mask>
+          <mask id="cut-b"><rect width="1024" height="1024" fill="#fff"/><rect x="384" y="384" width="437" height="437" rx="96" fill="#000"/></mask>
+          <mask id="cut-star"><rect width="1024" height="1024" fill="#fff"/><path d="M603 545Q612 594 661 603Q612 612 603 661Q594 612 545 603Q594 594 603 545Z" fill="#000"/></mask>
+          </defs>
+          <g fill="none" stroke="currentColor" stroke-width="37">
+          <rect x="248.5" y="248.5" width="346" height="346" rx="52" mask="url(#cut-a)"/>
+          <rect x="338.5" y="338.5" width="346" height="346" rx="52" mask="url(#cut-b)"/>
+          </g>
+          <rect x="410" y="410" width="385" height="385" rx="70" fill="currentColor" mask="url(#cut-star)"/>
+        </svg>
+        ai-image-mcp
+      </span>
       <nav>
         <a href="#create" data-view="create">Create</a>
         <a href="#providers" data-view="providers">Providers</a>

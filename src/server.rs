@@ -5,11 +5,16 @@ use std::sync::Arc;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
+use rmcp::model::{
+    CallToolResult, ContentBlock, Icon, Implementation, ServerCapabilities, ServerConfig,
+};
 use rmcp::{ErrorData as McpError, ServerHandler, tool, tool_handler, tool_router};
 use serde_json::json;
 
 use crate::app::{App, GenerateImageArgs};
+
+/// The app icon, advertised to clients that show server icons.
+const LOGO_SVG: &str = include_str!("../assets/logo.svg");
 
 const INSTRUCTIONS: &str = "Generate and edit images with generate_image. \
 Call list_providers first to see which providers are connected, their models, and which settings each one supports. \
@@ -70,10 +75,18 @@ impl ImageServer {
 impl ServerHandler for ImageServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new(
-                env!("CARGO_PKG_NAME"),
-                env!("CARGO_PKG_VERSION"),
-            ))
+            .with_server_info(
+                Implementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")).with_icons(
+                    vec![
+                        Icon::new(format!(
+                            "data:image/svg+xml;base64,{}",
+                            BASE64.encode(LOGO_SVG)
+                        ))
+                        .with_mime_type("image/svg+xml")
+                        .with_sizes(vec!["any".to_owned()]),
+                    ],
+                ),
+            )
             .with_instructions(INSTRUCTIONS)
     }
 }
