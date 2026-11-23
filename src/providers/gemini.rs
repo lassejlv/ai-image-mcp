@@ -76,6 +76,77 @@ impl Gemini {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelPage {
+    #[serde(default)]
+    models: Vec<ModelEntry>,
+    next_page_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelEntry {
+    name: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    supported_generation_methods: Vec<String>,
+}
+
+impl ModelEntry {
+    /// Gemini lists no output modalities, so image models are recognised by name: the
+    /// `*-image` ids and the Nano Banana family.
+    fn is_image_model(&self) -> bool {
+        let named = |s: &str| {
+            let s = s.to_ascii_lowercase();
+            s.contains("image") || s.contains("banana")
+        };
+        (named(&self.name) || named(&self.display_name))
+            && self
+                .supported_generation_methods
+                .iter()
+                .any(|g| g == "generateContent")
+    }
+}
+
+impl Gemini {
+    /// Image-capable models from `GET /models`, following every page.
+    pub async fn models(&self) -> anyhow::Result<Vec<String>> {
+        let c = &self.client;
+        let mut models = Vec::new();
+        let mut page_token: Option<String> = None;
+        loop {
+            let token = page_token.as_deref();
+            let page: ModelPage = c
+                .authorized(|bearer| async move {
+                    let mut url = format!("{}?pageSize=1000", c.url("models"));
+                    if let Some(token) = token {
+                        url.push_str(&format!("&pageToken={token}"));
+                    }
+                    let sent = c
+                        .http
+                        .get(url)
+                        .header("x-goog-api-key", bearer.token)
+                        .send()
+                        .await?;
+                    http::json(&c.name, sent).await
+                })
+                .await?;
+            models.extend(
+                page.models
+                    .into_iter()
+                    .filter(|m| m.is_image_model())
+                    .map(|m| m.name.trim_start_matches("models/").to_owned()),
+            );
+            match page.next_page_token.filter(|t| !t.is_empty()) {
+                Some(next) => page_token = Some(next),
+                None => return Ok(models),
+            }
+        }
+    }
+}
+
 fn request_body(request: &ImageRequest) -> Map<String, Value> {
     let s = &request.settings;
     let mut parts = vec![json!({ "text": request.prompt })];
