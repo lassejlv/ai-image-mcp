@@ -71,6 +71,13 @@ async fn full_oauth_flow_grants_access_to_mcp() {
     let base = start(Some(credentials())).await;
     let http = http();
 
+    let health = http.get(format!("{base}/health")).send().await.unwrap();
+    assert_eq!(
+        health.status(),
+        StatusCode::OK,
+        "health checks need no token"
+    );
+
     let unauthorized = initialize(&http, &base, None).await;
     assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
     let challenge = unauthorized.headers()[WWW_AUTHENTICATE]
