@@ -24,10 +24,10 @@ Or run it with Docker (`linux/amd64` and `linux/arm64`, published on every relea
 
 ```sh
 docker run -it --rm -v ai-image-mcp:/data ghcr.io/lassejlv/ai-image-mcp login xai
-docker run -i --rm -v ai-image-mcp:/data -v ~/Pictures/ai-image-mcp:/home/nonroot/ai-image-mcp ghcr.io/lassejlv/ai-image-mcp
+docker run -i --rm -v ai-image-mcp:/data -v ~/Pictures/ai-image-mcp:/home/nonroot/ai-image-mcp ghcr.io/lassejlv/ai-image-mcp serve
 ```
 
-The `/data` volume keeps the config and saved logins. Generated images go to `/home/nonroot/ai-image-mcp` inside the container, so mount a host folder there that UID 65532 can write to. Pass API keys with `-e OPENAI_API_KEY`. To serve remote clients over HTTP, see [Remote access](#remote-access-over-http-with-oauth) and add `-p 8080:8080` with `serve --http --bind 0.0.0.0:8080`.
+The `/data` volume keeps the config and saved logins. Generated images go to `/home/nonroot/ai-image-mcp` inside the container, so mount a host folder there that UID 65532 can write to. Pass API keys with `-e OPENAI_API_KEY`. Without arguments the container serves MCP over HTTP on port 8080 (`serve --http`, with `AI_IMAGE_MCP_BIND=0.0.0.0:8080`), which is what hosting platforms need; pass `serve` for stdio as above. HTTP on a public interface requires the sign-in from [Remote access](#remote-access-over-http-with-oauth), and `GET /health` answers `ok` for health checks.
 
 ## Connect a provider
 

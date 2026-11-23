@@ -6,6 +6,7 @@ use std::sync::Arc;
 use anyhow::{Context, bail};
 use axum::Router;
 use axum::middleware;
+use axum::routing::get;
 use reqwest::Url;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
@@ -38,9 +39,10 @@ pub fn router(app: App, public_url: &str, auth: Option<OAuthConfig>) -> anyhow::
         StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts),
     );
     let mcp_routes = Router::new().nest_service("/mcp", mcp);
+    let health = Router::new().route("/health", get(|| async { "ok" }));
 
     let Some(auth) = auth else {
-        return Ok(mcp_routes);
+        return Ok(mcp_routes.merge(health));
     };
     let auth = Arc::new(AuthServer::new(public_url, auth));
     Ok(mcp_routes
@@ -48,7 +50,8 @@ pub fn router(app: App, public_url: &str, auth: Option<OAuthConfig>) -> anyhow::
             auth.clone(),
             oauth::require_bearer,
         ))
-        .merge(oauth::routes(auth)))
+        .merge(oauth::routes(auth))
+        .merge(health))
 }
 
 /// Serves MCP over HTTP on `bind` until the process is stopped.

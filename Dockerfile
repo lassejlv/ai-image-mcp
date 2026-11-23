@@ -32,7 +32,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM gcr.io/distroless/cc-debian13:nonroot
 COPY --from=build /ai-image-mcp /usr/local/bin/ai-image-mcp
 # Config and saved logins; mount a volume here to keep them.
-ENV AI_IMAGE_MCP_HOME=/data
+ENV AI_IMAGE_MCP_HOME=/data \
+    AI_IMAGE_MCP_BIND=0.0.0.0:8080
 WORKDIR /data
+EXPOSE 8080
 ENTRYPOINT ["ai-image-mcp"]
-CMD ["serve"]
+# A container usually has no stdin to speak MCP over, so serve HTTP by default.
+# Run with `serve` (and `docker run -i`) for stdio instead.
+CMD ["serve", "--http"]
