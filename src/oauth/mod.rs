@@ -31,6 +31,10 @@ pub const PASSWORD_ENV: &str = "AI_IMAGE_MCP_AUTH_PASSWORD";
 /// Key that signs tokens. Without it a random key is used, and tokens end with the process.
 pub const SECRET_ENV: &str = "AI_IMAGE_MCP_AUTH_SECRET";
 
+/// Where `serve --http` mounts the dashboard.
+pub const DASHBOARD_PATH: &str = "/dashboard";
+const SESSION_COOKIE: &str = "aim_session";
+const SESSION_TTL_SECS: i64 = 7 * 24 * 60 * 60;
 const CODE_TTL_SECS: i64 = 120;
 const ACCESS_TTL_SECS: i64 = 60 * 60;
 const REFRESH_TTL_SECS: i64 = 30 * 24 * 60 * 60;
@@ -118,6 +122,13 @@ impl AuthServer {
         }))
     }
 
+    /// Checks a sign-in against the configured username and password in constant time.
+    fn credentials_match(&self, username: &str, password: &str) -> bool {
+        let username_ok = self.signer.same_secret(username, &self.config.username);
+        let password_ok = self.signer.same_secret(password, &self.config.password);
+        username_ok && password_ok
+    }
+
     /// Marks a code as redeemed; false when it already was.
     fn redeem(&self, jti: &str, exp: i64) -> bool {
         let mut used = self.used_codes.lock().expect("code set lock poisoned");
@@ -160,6 +171,110 @@ pub fn routes(auth: Arc<AuthServer>) -> Router {
         )
         .merge(public)
         .with_state(auth)
+}
+
+/// The dashboard's sign-in and sign-out pages, to merge into the HTTP router.
+pub fn session_routes(auth: Arc<AuthServer>) -> Router {
+    Router::new()
+        .route(
+            &format!("{DASHBOARD_PATH}/login"),
+            get(session_login_page).post(session_login_submit),
+        )
+        .route(&format!("{DASHBOARD_PATH}/logout"), post(session_logout))
+        .with_state(auth)
+}
+
+/// Middleware for the dashboard: requires a signed-in session cookie. Pages redirect to
+/// the sign-in; API calls get 401.
+pub async fn require_session(
+    State(auth): State<Arc<AuthServer>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let prefix = format!("{SESSION_COOKIE}=");
+    let signed_in = request
+        .headers()
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(';'))
+        .filter_map(|pair| pair.trim().strip_prefix(prefix.as_str()))
+        .filter_map(|token| auth.signer.verify(token))
+        .any(|claims| matches!(claims, Claims::Session { exp } if exp > now()));
+    if signed_in {
+        return next.run(request).await;
+    }
+    if request.uri().path().contains("/api/") {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    Redirect::to(&format!("{DASHBOARD_PATH}/login")).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionForm {
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    password: String,
+}
+
+async fn session_login_page() -> Response {
+    session_page(None, StatusCode::OK)
+}
+
+async fn session_login_submit(State(auth): Auth, Form(form): Form<SessionForm>) -> Response {
+    if !auth.credentials_match(&form.username, &form.password) {
+        tokio::time::sleep(FAILED_LOGIN_DELAY).await;
+        return session_page(
+            Some("Wrong username or password."),
+            StatusCode::UNAUTHORIZED,
+        );
+    }
+    let token = auth.signer.sign(&Claims::Session {
+        exp: now() + SESSION_TTL_SECS,
+    });
+    let secure = if auth.issuer.starts_with("https://") {
+        "; Secure"
+    } else {
+        ""
+    };
+    let cookie = format!(
+        "{SESSION_COOKIE}={token}; Path={DASHBOARD_PATH}; Max-Age={SESSION_TTL_SECS}; HttpOnly; SameSite=Strict{secure}"
+    );
+    (
+        [(header::SET_COOKIE, cookie)],
+        Redirect::to(&format!("{DASHBOARD_PATH}/")),
+    )
+        .into_response()
+}
+
+async fn session_logout() -> Response {
+    let cookie =
+        format!("{SESSION_COOKIE}=; Path={DASHBOARD_PATH}; Max-Age=0; HttpOnly; SameSite=Strict");
+    (
+        [(header::SET_COOKIE, cookie)],
+        Redirect::to(&format!("{DASHBOARD_PATH}/login")),
+    )
+        .into_response()
+}
+
+fn session_page(error: Option<&str>, status: StatusCode) -> Response {
+    let error = error.map_or_else(String::new, |e| {
+        format!(r#"<p class="error" role="alert">{}</p>"#, escape(e))
+    });
+    page(
+        status,
+        &format!(
+            r#"<h1>Sign in to the dashboard</h1>
+<p class="lede">Use the username and password this server was started with.</p>
+<form method="post" action="{DASHBOARD_PATH}/login">
+<label>Username<input name="username" autocomplete="username" autofocus required></label>
+<label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+{error}
+<button type="submit">Sign in</button>
+</form>"#
+        ),
+    )
 }
 
 /// Middleware for the MCP endpoint: requires a valid access token.
@@ -418,13 +533,7 @@ async fn authorize_submit(State(auth): Auth, Form(form): Form<LoginForm>) -> Res
         Ok(request) => request,
         Err(error) => return authorize_error(error),
     };
-    let username_ok = auth
-        .signer
-        .same_secret(&form.username, &auth.config.username);
-    let password_ok = auth
-        .signer
-        .same_secret(&form.password, &auth.config.password);
-    if !(username_ok && password_ok) {
+    if !auth.credentials_match(&form.username, &form.password) {
         tokio::time::sleep(FAILED_LOGIN_DELAY).await;
         return login_page(
             &form.params,

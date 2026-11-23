@@ -1,5 +1,6 @@
-//! A small local web dashboard: provider status, browser logins, a generate form, and a
-//! gallery of saved images. Served on loopback only.
+//! A small web dashboard: provider status, browser logins, a generate form, and a gallery
+//! of saved images. `ai-image-mcp dashboard` serves it on loopback; `serve --http` mounts it
+//! at `/dashboard` behind the same sign-in as the OAuth server.
 
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -9,7 +10,7 @@ use anyhow::Context;
 use axum::extract::{DefaultBodyLimit, Path, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
@@ -30,7 +31,8 @@ const APP_JS: &str = include_str!("assets/app.js");
 const LOGO_SVG: &str = include_str!("../../assets/logo.svg");
 
 struct Dashboard {
-    app: App,
+    app: Arc<App>,
+    sign_out: bool,
     http: reqwest::Client,
     logins: Mutex<HashMap<&'static str, LoginState>>,
 }
@@ -50,50 +52,84 @@ pub async fn serve(app: App, port: u16) -> anyhow::Result<()> {
         .with_context(|| format!("binding 127.0.0.1:{port}"))?;
     let addr = listener.local_addr()?;
     println!("Dashboard running at http://{addr}");
-    axum::serve(listener, router(app)).await?;
+    axum::serve(listener, local_router(app)).await?;
     Ok(())
 }
 
-/// The dashboard's routes, exposed for tests.
-pub fn router(app: App) -> Router {
-    let state = Arc::new(Dashboard {
+/// Where the dashboard is mounted.
+#[derive(Debug, Clone, Copy)]
+pub struct Mount<'a> {
+    /// Path prefix without a trailing slash; empty for the root.
+    pub base: &'a str,
+    /// Whether a sign-in session exists, so the page offers a sign-out button.
+    pub sign_out: bool,
+}
+
+/// The standalone dashboard: mounted at the root and reachable only through loopback.
+pub fn local_router(app: impl Into<Arc<App>>) -> Router {
+    router(
         app,
+        Mount {
+            base: "",
+            sign_out: false,
+        },
+    )
+    .layer(middleware::from_fn(loopback_host_only))
+}
+
+/// The dashboard's routes under `mount.base`. The page uses relative URLs, so it works at
+/// any prefix; `<base>` redirects to `<base>/` so those URLs resolve.
+pub fn router(app: impl Into<Arc<App>>, mount: Mount<'_>) -> Router {
+    let state = Arc::new(Dashboard {
+        app: app.into(),
+        sign_out: mount.sign_out,
         http: reqwest::Client::new(),
         logins: Mutex::new(HashMap::new()),
     });
-    Router::new()
+    let base = mount.base;
+    let mut router = Router::new()
         .route(
-            "/",
+            &format!("{base}/"),
             get(|| async { asset("text/html; charset=utf-8", INDEX_HTML) }),
         )
         .route(
-            "/app.css",
+            &format!("{base}/app.css"),
             get(|| async { asset("text/css; charset=utf-8", APP_CSS) }),
         )
         .route(
-            "/app.js",
+            &format!("{base}/app.js"),
             get(|| async { asset("text/javascript; charset=utf-8", APP_JS) }),
         )
         .route(
-            "/favicon.svg",
+            &format!("{base}/favicon.svg"),
             get(|| async { asset("image/svg+xml", LOGO_SVG) }),
         )
-        .route("/api/providers", get(providers))
-        .route("/api/generate", post(generate))
-        .route("/api/images", get(images))
+        .route(&format!("{base}/api/providers"), get(providers))
+        .route(&format!("{base}/api/generate"), post(generate))
+        .route(&format!("{base}/api/images"), get(images))
         .route(
-            "/api/login/{account}",
+            &format!("{base}/api/login/{{account}}"),
             get(login_status).post(start_login).delete(logout),
         )
-        .route("/images/{key}", get(image_file))
+        .route(&format!("{base}/images/{{key}}"), get(image_file));
+    if !base.is_empty() {
+        let index = format!("{base}/");
+        router = router.route(
+            base,
+            get(move || {
+                let index = index.clone();
+                async move { Redirect::permanent(&index) }
+            }),
+        );
+    }
+    router
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
-        .layer(middleware::from_fn(loopback_host_only))
         .with_state(state)
 }
 
 /// Rejects requests whose Host is not loopback, so a web page cannot reach the dashboard
 /// through DNS rebinding.
-async fn loopback_host_only(request: Request, next: Next) -> Response {
+pub async fn loopback_host_only(request: Request, next: Next) -> Response {
     let host = request
         .headers()
         .get(header::HOST)
@@ -145,6 +181,7 @@ async fn providers(State(dash): Shared) -> Json<serde_json::Value> {
     Json(json!({
         "providers": dash.app.providers().await,
         "storage": dash.app.storage().describe(),
+        "sign_out": dash.sign_out,
     }))
 }
 
@@ -204,8 +241,9 @@ async fn image_file(State(dash): Shared, Path(key): Path<String>) -> Result<Resp
     Ok(([(header::CONTENT_TYPE, mime)], data).into_response())
 }
 
+/// Relative to the dashboard page, so it works wherever the dashboard is mounted.
 fn image_url(key: &str) -> String {
-    format!("/images/{key}")
+    format!("images/{key}")
 }
 
 fn issuer(account: &str) -> Result<Issuer, ApiError> {

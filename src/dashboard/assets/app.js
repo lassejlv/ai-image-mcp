@@ -22,6 +22,10 @@ async function api(path, options = {}) {
     ...options,
     headers: { "content-type": "application/json", ...(options.headers || {}) },
   });
+  if (response.status === 401) {
+    location.href = "login";
+    throw new Error("Signed out");
+  }
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
   return body;
@@ -63,9 +67,10 @@ function route() {
 /* Providers */
 
 async function loadProviders() {
-  const data = await api("/api/providers");
+  const data = await api("api/providers");
   state.providers = data.providers;
   $("#storage").textContent = data.storage;
+  $("#sign-out").hidden = !data.sign_out;
   renderProviderSelect();
   renderProviderList();
 }
@@ -196,7 +201,7 @@ async function startLogin(account, row) {
   const button = row.querySelector(".secondary");
   button.disabled = true;
   try {
-    const prompt = await api(`/api/login/${account}`, { method: "POST" });
+    const prompt = await api(`api/login/${account}`, { method: "POST" });
     state.polls.set(account, prompt);
     renderProviderList();
     window.open(prompt.verification_uri, "_blank", "noreferrer");
@@ -210,7 +215,7 @@ async function startLogin(account, row) {
 async function pollLogin(account) {
   while (state.polls.has(account)) {
     await new Promise((resolve) => setTimeout(resolve, 3000));
-    const status = await api(`/api/login/${account}`).catch(() => ({ state: "pending" }));
+    const status = await api(`api/login/${account}`).catch(() => ({ state: "pending" }));
     if (status.state === "pending") continue;
     state.polls.delete(account);
     await loadProviders();
@@ -224,7 +229,7 @@ async function pollLogin(account) {
 /** Picks up logins started before the page was (re)loaded. */
 async function resumeLogins() {
   for (const p of state.providers.filter((p) => p.login && !p.ready && !state.polls.has(p.login))) {
-    const status = await api(`/api/login/${p.login}`).catch(() => ({}));
+    const status = await api(`api/login/${p.login}`).catch(() => ({}));
     if (status.state !== "pending") continue;
     state.polls.set(p.login, status.prompt);
     renderProviderList();
@@ -233,7 +238,7 @@ async function resumeLogins() {
 }
 
 async function logout(account) {
-  await api(`/api/login/${account}`, { method: "DELETE" });
+  await api(`api/login/${account}`, { method: "DELETE" });
   await loadProviders();
 }
 
@@ -359,7 +364,7 @@ async function generate(event) {
   hideNote();
   setBusy(true);
   try {
-    const outcome = await api("/api/generate", { method: "POST", body: JSON.stringify(args) });
+    const outcome = await api("api/generate", { method: "POST", body: JSON.stringify(args) });
     const count = outcome.images.length;
     showResult(outcome.urls, `${outcome.provider} · ${outcome.model} · ${count} image${count === 1 ? "" : "s"}`);
     if (outcome.ignored_settings && outcome.ignored_settings.length) {
@@ -378,7 +383,7 @@ async function generate(event) {
 /* Gallery */
 
 async function loadGallery() {
-  const images = await api("/api/images");
+  const images = await api("api/images");
   $("#gallery-empty").hidden = images.length > 0;
   $("#gallery").replaceChildren(
     ...images.map((image) =>

@@ -1,4 +1,5 @@
-//! MCP over streamable HTTP, optionally behind the built-in OAuth server.
+//! MCP over streamable HTTP at `/mcp`, plus the dashboard at `/dashboard`, optionally
+//! behind the built-in OAuth server and its sign-in.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -12,10 +13,12 @@ use rmcp::transport::streamable_http_server::session::local::LocalSessionManager
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 
 use crate::app::App;
+use crate::dashboard::{self, Mount};
 use crate::oauth::{self, AuthServer, OAuthConfig};
 use crate::server::ImageServer;
 
-/// Builds the HTTP routes: `/mcp`, plus the OAuth endpoints when `auth` is set.
+/// Builds the HTTP routes: `/mcp`, `/dashboard`, and `/health`, plus the OAuth endpoints
+/// and the dashboard sign-in when `auth` is set.
 ///
 /// `public_url` is the address clients reach this server at; it names the OAuth issuer
 /// and is the only non-loopback host the MCP endpoint accepts.
@@ -32,7 +35,8 @@ pub fn router(app: App, public_url: &str, auth: Option<OAuthConfig>) -> anyhow::
         allowed_hosts.push(format!("{host}:{port}"));
     }
 
-    let server = ImageServer::new(app);
+    let app = Arc::new(app);
+    let server = ImageServer::new(app.clone());
     let mcp = StreamableHttpService::new(
         move || Ok(server.clone()),
         Arc::new(LocalSessionManager::default()),
@@ -40,9 +44,17 @@ pub fn router(app: App, public_url: &str, auth: Option<OAuthConfig>) -> anyhow::
     );
     let mcp_routes = Router::new().nest_service("/mcp", mcp);
     let health = Router::new().route("/health", get(|| async { "ok" }));
+    let dashboard = dashboard::router(
+        app,
+        Mount {
+            base: oauth::DASHBOARD_PATH,
+            sign_out: auth.is_some(),
+        },
+    );
 
     let Some(auth) = auth else {
-        return Ok(mcp_routes.merge(health));
+        let dashboard = dashboard.layer(middleware::from_fn(dashboard::loopback_host_only));
+        return Ok(mcp_routes.merge(dashboard).merge(health));
     };
     let auth = Arc::new(AuthServer::new(public_url, auth));
     Ok(mcp_routes
@@ -50,6 +62,11 @@ pub fn router(app: App, public_url: &str, auth: Option<OAuthConfig>) -> anyhow::
             auth.clone(),
             oauth::require_bearer,
         ))
+        .merge(dashboard.route_layer(middleware::from_fn_with_state(
+            auth.clone(),
+            oauth::require_session,
+        )))
+        .merge(oauth::session_routes(auth.clone()))
         .merge(oauth::routes(auth))
         .merge(health))
 }
@@ -73,10 +90,9 @@ pub async fn serve(app: App, bind: SocketAddr, public_url: Option<String>) -> an
     } else {
         "no authentication"
     };
-    eprintln!(
-        "MCP endpoint: {}/mcp ({secured})",
-        public_url.trim_end_matches('/')
-    );
+    let base = public_url.trim_end_matches('/');
+    eprintln!("MCP endpoint: {base}/mcp ({secured})");
+    eprintln!("Dashboard: {base}{}/", oauth::DASHBOARD_PATH);
     axum::serve(listener, router(app, &public_url, auth)?).await?;
     Ok(())
 }
