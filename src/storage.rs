@@ -253,9 +253,15 @@ fn is_plain_file_name(name: &str) -> bool {
 /// The MIME type for a file name with an image extension this server writes.
 fn image_mime(name: &str) -> Option<&'static str> {
     let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
-    ["image/png", "image/jpeg", "image/webp", "image/gif"]
-        .into_iter()
-        .find(|mime| extension_for(mime) == ext || (ext == "jpeg" && *mime == "image/jpeg"))
+    [
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+        "image/gif",
+        "image/svg+xml",
+    ]
+    .into_iter()
+    .find(|mime| extension_for(mime) == ext || (ext == "jpeg" && *mime == "image/jpeg"))
 }
 
 /// The first few words of a prompt, for a readable gallery name.
@@ -279,6 +285,7 @@ mod tests {
         assert_eq!(image_mime("a.JPG"), Some("image/jpeg"));
         assert_eq!(image_mime("a.jpeg"), Some("image/jpeg"));
         assert_eq!(image_mime("a.webp"), Some("image/webp"));
+        assert_eq!(image_mime("a.svg"), Some("image/svg+xml"));
         assert_eq!(image_mime("config.toml"), None);
         assert_eq!(image_mime("png"), None);
     }

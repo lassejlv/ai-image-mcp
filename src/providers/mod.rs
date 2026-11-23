@@ -5,6 +5,7 @@ mod fal;
 mod gemini;
 mod images_api;
 mod openai;
+mod quiver;
 mod xai;
 
 use std::future::Future;
@@ -47,15 +48,18 @@ pub enum ProviderKind {
     Gemini,
     /// fal.ai's model catalog (Flux, Recraft, Ideogram, and more).
     Fal,
+    /// QuiverAI Arrow, which generates vector SVGs.
+    Quiver,
 }
 
 impl ProviderKind {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Xai,
         Self::Codex,
         Self::OpenAi,
         Self::Gemini,
         Self::Fal,
+        Self::Quiver,
     ];
 
     pub fn id(self) -> &'static str {
@@ -65,6 +69,7 @@ impl ProviderKind {
             Self::OpenAi => "openai",
             Self::Gemini => "gemini",
             Self::Fal => "fal",
+            Self::Quiver => "quiver",
         }
     }
 
@@ -104,6 +109,7 @@ impl ProviderKind {
                 "fal-ai/nano-banana-pro",
                 "fal-ai/flux/dev",
             ],
+            Self::Quiver => &["arrow-2", "arrow-2-telos"],
         }
     }
 
@@ -131,6 +137,7 @@ impl ProviderKind {
                 NegativePrompt,
                 OutputFormat,
             ],
+            Self::Quiver => &[N],
         }
     }
 
@@ -141,6 +148,7 @@ impl ProviderKind {
             Self::OpenAi => 16,
             Self::Gemini => 14,
             Self::Fal => 10,
+            Self::Quiver => 14,
         }
     }
 
@@ -149,7 +157,7 @@ impl ProviderKind {
         match self {
             Self::Xai => Some("xai"),
             Self::Codex => Some("codex"),
-            Self::OpenAi | Self::Gemini | Self::Fal => None,
+            Self::OpenAi | Self::Gemini | Self::Fal | Self::Quiver => None,
         }
     }
 
@@ -159,6 +167,7 @@ impl ProviderKind {
             Self::OpenAi | Self::Codex => "OPENAI_API_KEY",
             Self::Gemini => "GEMINI_API_KEY",
             Self::Fal => "FAL_KEY",
+            Self::Quiver => "QUIVERAI_API_KEY",
         }
     }
 }
@@ -171,6 +180,7 @@ pub enum Provider {
     OpenAi(openai::OpenAi),
     Gemini(gemini::Gemini),
     Fal(fal::Fal),
+    Quiver(quiver::Quiver),
 }
 
 impl Provider {
@@ -183,6 +193,7 @@ impl Provider {
             Self::OpenAi(p) => Some(p.models().await),
             Self::Gemini(p) => Some(p.models().await),
             Self::Fal(p) => Some(p.models().await),
+            Self::Quiver(p) => Some(p.models().await),
         }
     }
 
@@ -193,6 +204,7 @@ impl Provider {
             Self::OpenAi(p) => p.generate(request).await,
             Self::Gemini(p) => p.generate(request).await,
             Self::Fal(p) => p.generate(request).await,
+            Self::Quiver(p) => p.generate(request).await,
         }
     }
 }
@@ -299,6 +311,7 @@ impl Entry {
             Provider::OpenAi(p) => &p.client,
             Provider::Gemini(p) => &p.client,
             Provider::Fal(p) => &p.client,
+            Provider::Quiver(p) => &p.client,
         }
     }
 
@@ -532,7 +545,7 @@ fn build_entry(name: &str, cfg: ProviderConfig, storage: &Storage) -> anyhow::Re
                 "run `ai-image-mcp login codex` (or `codex login`)".to_owned(),
             )
         }
-        ProviderKind::OpenAi | ProviderKind::Gemini | ProviderKind::Fal => {
+        ProviderKind::OpenAi | ProviderKind::Gemini | ProviderKind::Fal | ProviderKind::Quiver => {
             (vec![api_key()], format!("set {env}"))
         }
     };
@@ -559,6 +572,7 @@ fn build_entry(name: &str, cfg: ProviderConfig, storage: &Storage) -> anyhow::Re
         ProviderKind::OpenAi => Provider::OpenAi(openai::OpenAi { client }),
         ProviderKind::Gemini => Provider::Gemini(gemini::Gemini { client }),
         ProviderKind::Fal => Provider::Fal(fal::Fal { client }),
+        ProviderKind::Quiver => Provider::Quiver(quiver::Quiver { client }),
     };
     Ok(Entry {
         name: name.to_owned(),
@@ -577,6 +591,7 @@ fn default_base_url(kind: ProviderKind) -> &'static str {
         ProviderKind::OpenAi => "https://api.openai.com/v1",
         ProviderKind::Gemini => "https://generativelanguage.googleapis.com/v1beta",
         ProviderKind::Fal => "https://fal.run",
+        ProviderKind::Quiver => "https://api.quiver.ai/v1",
     }
 }
 

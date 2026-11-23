@@ -64,3 +64,9 @@ api_key_env = "FAL_KEY"
 model = "fal-ai/flux/dev"
 timeout_secs = 600
 defaults = { extra = { num_inference_steps = 28, enable_safety_checker = true } }
+
+# QuiverAI Arrow: vector SVG output. Pass `instructions` or sampling settings through `extra`.
+[providers.vector]
+type = "quiver"
+api_key_env = "QUIVERAI_API_KEY"
+model = "arrow-2"

@@ -33,7 +33,7 @@ impl ImageServer {
     }
 
     #[tool(
-        description = "Generate or edit images with a configured provider (xAI Grok Imagine, ChatGPT/Codex GPT Image, OpenAI, Gemini, fal, or an OpenAI-compatible service). Saves the images to disk and returns their paths, plus the image data unless disabled. Settings a provider does not support are reported back, not silently applied."
+        description = "Generate or edit images with a configured provider (xAI Grok Imagine, ChatGPT/Codex GPT Image, OpenAI, Gemini, fal, QuiverAI for SVG, or an OpenAI-compatible service). Saves the images to disk and returns their paths, plus the image data unless disabled. Settings a provider does not support are reported back, not silently applied."
     )]
     async fn generate_image(
         &self,

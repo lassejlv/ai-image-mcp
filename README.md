@@ -11,6 +11,7 @@ An MCP server, written in Rust on the official [`rmcp`](https://github.com/model
 | `openai` | `OPENAI_API_KEY`, or any OpenAI-compatible service via `base_url` | `gpt-image-2.6-flare` |
 | `gemini` | `GEMINI_API_KEY` | `gemini-nano-banana-2.1` |
 | `fal` | `FAL_KEY`, with any model in fal's catalog | `google/nano-banana-2.1` |
+| `quiver` | `QUIVERAI_API_KEY`; QuiverAI Arrow generates vector SVGs | `arrow-2` |
 
 Every request can pick the provider, the model, and the generation settings. Images are saved to disk and also returned inline to the client.
 
@@ -121,13 +122,13 @@ Access tokens last an hour, and refresh tokens last 30 days. Client ids, codes, 
 | `background` | `transparent`, `opaque`, `auto` | openai, codex |
 | `output_format`, `output_compression` | `png` / `jpeg` / `webp`, 0-100 | openai (format also fal) |
 | `seed`, `negative_prompt` | Diffusion controls | fal |
-| `extra` | Any provider-specific field, merged into the request body | all |
+| `extra` | Any provider-specific field, merged into the request body, e.g. Quiver's `instructions` or `temperature` | all |
 | `output_dir`, `filename` | Where and under what name to save | all |
 | `include_image_data` | Return image data inline (default from config) | all |
 
 A setting the chosen provider does not support is reported back as not applied rather than silently dropped.
 
-**`list_providers`** reports each provider's connection state, its default model, the image models it offers right now, its supported settings, and how many input images it accepts. Model lists are fetched from each provider's own API: OpenAI `GET /models`, xAI `GET /image-generation-models`, Gemini `models.list`, and fal's model catalog. They are cached for 10 minutes. The built-in list is used only when a provider isn't connected or its API fails, and for the Codex backend, which has no model listing.
+**`list_providers`** reports each provider's connection state, its default model, the image models it offers right now, its supported settings, and how many input images it accepts. Model lists are fetched from each provider's own API: OpenAI `GET /models`, xAI `GET /image-generation-models`, Gemini `models.list`, Quiver `GET /v1/models`, and fal's model catalog. They are cached for 10 minutes. The built-in list is used only when a provider isn't connected or its API fails, and for the Codex backend, which has no model listing.
 
 ## Configuration
 

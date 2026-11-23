@@ -238,7 +238,19 @@ async fn image_file(State(dash): Shared, Path(key): Path<String>) -> Result<Resp
         .read(&key)
         .await?
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "not found".into()))?;
-    Ok(([(header::CONTENT_TYPE, mime)], data).into_response())
+    // Generated SVGs can carry scripts; the sandbox keeps them from running on this origin.
+    Ok((
+        [
+            (header::CONTENT_TYPE, mime),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; style-src 'unsafe-inline'; sandbox".to_owned(),
+            ),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+        ],
+        data,
+    )
+        .into_response())
 }
 
 /// Relative to the dashboard page, so it works wherever the dashboard is mounted.
