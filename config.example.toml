@@ -1,0 +1,62 @@
+# ai-image-mcp configuration.
+#
+# Location: <config dir>/ai-image-mcp/config.toml
+#   macOS:   ~/Library/Application Support/ai-image-mcp/config.toml
+#   Linux:   ~/.config/ai-image-mcp/config.toml
+#   Windows: %APPDATA%\ai-image-mcp\config.toml
+# Override with --config, AI_IMAGE_MCP_CONFIG, or AI_IMAGE_MCP_HOME.
+#
+# Without a [providers] section, every built-in provider (xai, codex, openai, gemini, fal)
+# is offered and the first connected one is the default. Once you define providers here,
+# only these are offered, in this order.
+
+# Provider used when a request does not name one.
+default_provider = "grok"
+
+[output]
+# Where images are saved. Defaults to ~/Pictures/ai-image-mcp.
+dir = "~/Pictures/ai-image-mcp"
+# Return image data inline in tool results as well as saving it.
+inline_images = true
+
+# SuperGrok / X Premium+ via `ai-image-mcp login xai`, falling back to XAI_API_KEY.
+[providers.grok]
+type = "xai"
+auth = "auto"                       # auto | oauth | api-key
+model = "grok-imagine-image-2.0"
+defaults = { aspect_ratio = "16:9", quality = "medium" }
+
+# ChatGPT plan via `ai-image-mcp login codex`, falling back to the Codex CLI's own login.
+[providers.chatgpt]
+type = "codex"
+auth = "auto"                       # auto | oauth | codex-cli
+# codex_home = "~/.codex"
+defaults = { quality = "high" }
+
+# OpenAI Images API with an API key.
+[providers.openai]
+type = "openai"
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-image-2"
+
+# Any OpenAI-compatible images endpoint.
+[providers.together]
+type = "openai"
+base_url = "https://api.together.xyz/v1"
+api_key_env = "TOGETHER_API_KEY"
+model = "black-forest-labs/FLUX.1-schnell"
+
+# Google Gemini (Nano Banana).
+[providers.gemini]
+type = "gemini"
+api_key_env = "GEMINI_API_KEY"
+model = "gemini-nano-banana-2.1"
+defaults = { resolution = "2k" }
+
+# fal.ai: any model id from fal.ai/models works as `model`.
+[providers.flux]
+type = "fal"
+api_key_env = "FAL_KEY"
+model = "fal-ai/flux/dev"
+timeout_secs = 600
+defaults = { extra = { num_inference_steps = 28, enable_safety_checker = true } }
