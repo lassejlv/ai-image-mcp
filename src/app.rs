@@ -6,10 +6,11 @@ use anyhow::Context;
 use rmcp::schemars::{self, JsonSchema};
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Config, OutputConfig, Paths, expand_home};
+use crate::config::{Config, Paths, expand_home};
 use crate::image::{GeneratedImage, ImageSettings, Setting};
-use crate::media::{load_input, save_images};
+use crate::media::load_input;
 use crate::providers::{ProviderInfo, Registry};
+use crate::storage::{ImageLocation, ImageRecord, Storage};
 
 /// Arguments of the `generate_image` tool.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
@@ -25,10 +26,11 @@ pub struct GenerateImageArgs {
     /// Images to edit or use as references: local paths, http(s) URLs, or data URIs.
     #[serde(default)]
     pub input_images: Vec<String>,
-    /// Directory to save into instead of the configured output directory.
+    /// Directory to save into instead of the configured output directory (file storage only).
     #[serde(default)]
     pub output_dir: Option<String>,
-    /// File name for the result, without extension. Several images get -1, -2, ... suffixes.
+    /// File name for the result, without extension. Several images get -1, -2, ... suffixes
+    /// (file storage only).
     #[serde(default)]
     pub filename: Option<String>,
     /// Return the image data in the result as well as saving it. Defaults to the server setting.
@@ -41,7 +43,8 @@ pub struct GenerateImageArgs {
 /// One saved result image.
 #[derive(Debug, Clone, Serialize)]
 pub struct OutputImage {
-    pub path: PathBuf,
+    #[serde(flatten)]
+    pub location: ImageLocation,
     pub mime_type: String,
     pub bytes: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -61,19 +64,23 @@ pub struct Outcome {
     pub inline: Vec<GeneratedImage>,
 }
 
-/// Providers, output settings, and an HTTP client for fetching input images.
+/// Providers, storage, and an HTTP client for fetching input images.
 #[derive(Debug)]
 pub struct App {
     registry: Registry,
-    output: OutputConfig,
+    storage: Storage,
+    inline_images: bool,
     http: reqwest::Client,
 }
 
 impl App {
-    pub fn new(config: &Config, paths: &Paths) -> anyhow::Result<Self> {
+    /// Opens storage (connecting to Postgres when configured) and sets up the providers.
+    pub async fn new(config: &Config, paths: &Paths) -> anyhow::Result<Self> {
+        let storage = Storage::open(config, paths).await?;
         Ok(Self {
-            registry: Registry::from_config(config, paths)?,
-            output: config.output.clone(),
+            registry: Registry::from_config(config, &storage)?,
+            storage,
+            inline_images: config.output.inline_images,
             http: reqwest::Client::builder()
                 .user_agent(concat!("ai-image-mcp/", env!("CARGO_PKG_VERSION")))
                 .build()?,
@@ -81,22 +88,21 @@ impl App {
     }
 
     /// Loads `config.toml` from `config_path`, or from its default location under `paths`.
-    pub fn load(config_path: Option<&Path>, paths: &Paths) -> anyhow::Result<Self> {
+    pub async fn load(config_path: Option<&Path>, paths: &Paths) -> anyhow::Result<Self> {
         let config_path = config_path.map_or_else(|| paths.config_file(), Path::to_path_buf);
-        Self::new(&Config::load(&config_path)?, paths)
+        Self::new(&Config::load(&config_path)?, paths).await
     }
 
-    pub fn providers(&self) -> Vec<ProviderInfo> {
-        self.registry.infos()
+    pub async fn providers(&self) -> Vec<ProviderInfo> {
+        self.registry.infos().await
     }
 
-    /// Where images are saved when a request names no directory.
-    pub fn output_dir(&self) -> PathBuf {
-        self.output.dir()
+    pub fn storage(&self) -> &Storage {
+        &self.storage
     }
 
     pub async fn generate(&self, args: GenerateImageArgs) -> anyhow::Result<Outcome> {
-        let entry = self.registry.get(args.provider.as_deref())?;
+        let entry = self.registry.get(args.provider.as_deref()).await?;
         let mut inputs = Vec::with_capacity(args.input_images.len());
         for source in &args.input_images {
             inputs.push(
@@ -110,28 +116,36 @@ impl App {
             .generate(args.prompt.clone(), args.model, args.settings, inputs)
             .await?;
 
-        let dir = args
+        let record = ImageRecord {
+            provider: &generation.provider,
+            model: &generation.model,
+            prompt: &args.prompt,
+            settings: &generation.settings,
+        };
+        let dir: Option<PathBuf> = args
             .output_dir
             .as_deref()
-            .map_or_else(|| self.output.dir(), |dir| expand_home(Path::new(dir)));
-        let saved = save_images(
-            &dir,
-            args.filename.as_deref(),
-            &args.prompt,
-            &generation.images,
-        )
-        .await?;
-        let images = saved
+            .map(|dir| expand_home(Path::new(dir)));
+        let locations = self
+            .storage
+            .save(
+                &record,
+                dir.as_deref(),
+                args.filename.as_deref(),
+                &generation.images,
+            )
+            .await?;
+        let images = locations
             .into_iter()
             .zip(&generation.images)
-            .map(|(saved, image)| OutputImage {
-                path: saved.path,
-                mime_type: saved.mime_type,
-                bytes: saved.bytes,
+            .map(|(location, image)| OutputImage {
+                location,
+                mime_type: image.mime_type.clone(),
+                bytes: image.data.len(),
                 revised_prompt: image.revised_prompt.clone(),
             })
             .collect();
-        let inline = if args.include_image_data.unwrap_or(self.output.inline_images) {
+        let inline = if args.include_image_data.unwrap_or(self.inline_images) {
             generation.images
         } else {
             Vec::new()
@@ -157,7 +171,7 @@ impl Outcome {
             self.model
         );
         for image in &self.images {
-            text.push_str(&format!("\n- {}", image.path.display()));
+            text.push_str(&format!("\n- {}", image.location));
             if let Some(revised) = &image.revised_prompt {
                 text.push_str(&format!("\n  revised prompt: {revised}"));
             }

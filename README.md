@@ -104,6 +104,17 @@ Without a config file every built-in provider is offered and the first connected
 
 `AI_IMAGE_MCP_HOME` moves the whole directory (config and saved logins); `--config` or `AI_IMAGE_MCP_CONFIG` points at a specific file. Unknown keys are rejected, so typos fail loudly.
 
+## Postgres storage
+
+By default logins are saved under `<config dir>/ai-image-mcp/credentials/` and images in the output folder. Point the server at Postgres and both move into the database instead, so the server keeps no local state:
+
+```sh
+export AI_IMAGE_MCP_DATABASE_URL=postgres://user:password@localhost:5432/ai_image_mcp
+ai-image-mcp login xai    # saved in the database
+```
+
+`database_url` in `config.toml` does the same; the environment variable wins. Tables are created and migrated on startup. Each image is stored with its prompt, provider, model, and settings. Tool results then name images by id (`image 42 in Postgres`) instead of by path, and include the image data inline as usual; the dashboard reads its gallery from the database. Token refreshes lock the login's row, so several server processes can share one database. The Codex CLI fallback still reads `~/.codex/auth.json`, since that file belongs to the Codex CLI.
+
 ## How the subscription logins work
 
 - **xai** runs OAuth device-code login against `auth.x.ai` with xAI's public client for coding agents (the one Grok Build, Hermes, and OpenClaw use) and calls `api.x.ai/v1/images/*` with the resulting token. xAI has been seen to reject some SuperGrok tiers with HTTP 403; set `XAI_API_KEY` if that happens.
@@ -119,7 +130,10 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
+The Postgres tests run when `AI_IMAGE_MCP_TEST_DATABASE_URL` points at a server whose user can create databases; each test gets a fresh one.
+
 ```
+migrations/        SQL migrations, embedded and run on startup
 src/
   main.rs          CLI: serve, dashboard, login, logout, providers, generate
   server.rs        MCP tools on rmcp
@@ -128,6 +142,7 @@ src/
   image.rs         provider-neutral request, settings, and result types
   media.rs         loading input images, saving results
   http.rs          error and download helpers
+  storage.rs       file or Postgres storage for images and logins
   auth/            API keys, OAuth grants, xAI and ChatGPT device logins
   providers/       one module per provider type, plus the registry
   dashboard/       local web dashboard: axum routes and static assets
@@ -135,4 +150,5 @@ tests/
   providers.rs     every provider against a mock HTTP server
   mcp.rs           an rmcp client driving the server end to end
   dashboard.rs     the dashboard's HTTP API
+  postgres.rs      Postgres storage (needs AI_IMAGE_MCP_TEST_DATABASE_URL)
 ```

@@ -3,13 +3,11 @@
 
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 use anyhow::Context;
 use axum::extract::{DefaultBodyLimit, Path, Request, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -20,8 +18,6 @@ use tokio::sync::oneshot;
 
 use crate::app::{App, GenerateImageArgs, Outcome};
 use crate::auth::{self, DevicePrompt, Issuer};
-use crate::config::Paths;
-use crate::image::extension_for;
 
 /// Request bodies carry input images as data URIs, so allow well beyond axum's 2 MB default.
 const BODY_LIMIT: usize = 64 * 1024 * 1024;
@@ -34,7 +30,6 @@ const APP_JS: &str = include_str!("assets/app.js");
 
 struct Dashboard {
     app: App,
-    paths: Paths,
     http: reqwest::Client,
     logins: Mutex<HashMap<&'static str, LoginState>>,
 }
@@ -48,21 +43,20 @@ enum LoginState {
 }
 
 /// Serves the dashboard on `127.0.0.1:<port>` until the process is stopped.
-pub async fn serve(app: App, paths: Paths, port: u16) -> anyhow::Result<()> {
+pub async fn serve(app: App, port: u16) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
         .await
         .with_context(|| format!("binding 127.0.0.1:{port}"))?;
     let addr = listener.local_addr()?;
     println!("Dashboard running at http://{addr}");
-    axum::serve(listener, router(app, paths)).await?;
+    axum::serve(listener, router(app)).await?;
     Ok(())
 }
 
 /// The dashboard's routes, exposed for tests.
-pub fn router(app: App, paths: Paths) -> Router {
+pub fn router(app: App) -> Router {
     let state = Arc::new(Dashboard {
         app,
-        paths,
         http: reqwest::Client::new(),
         logins: Mutex::new(HashMap::new()),
     });
@@ -86,7 +80,7 @@ pub fn router(app: App, paths: Paths) -> Router {
             "/api/login/{account}",
             get(login_status).post(start_login).delete(logout),
         )
-        .route("/images/{name}", get(image_file))
+        .route("/images/{key}", get(image_file))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .layer(middleware::from_fn(loopback_host_only))
         .with_state(state)
@@ -144,19 +138,9 @@ type Shared = State<Arc<Dashboard>>;
 
 async fn providers(State(dash): Shared) -> Json<serde_json::Value> {
     Json(json!({
-        "providers": dash.app.providers(),
-        "output_dir": dash.app.output_dir(),
+        "providers": dash.app.providers().await,
+        "storage": dash.app.storage().describe(),
     }))
-}
-
-/// A saved image as the browser sees it.
-#[derive(Debug, Serialize)]
-struct GalleryImage {
-    name: String,
-    url: String,
-    bytes: u64,
-    /// Unix seconds.
-    modified: u64,
 }
 
 #[derive(Serialize)]
@@ -176,76 +160,47 @@ async fn generate(
     let urls = outcome
         .images
         .iter()
-        .filter_map(|image| image.path.file_name())
-        .map(|name| image_url(&name.to_string_lossy()))
+        .map(|image| image_url(&image.location.key()))
         .collect();
     Ok(Json(GenerateResponse { outcome, urls }))
 }
 
+/// A saved image as the browser sees it.
+#[derive(Serialize)]
+struct GalleryImage {
+    name: String,
+    url: String,
+    bytes: u64,
+    created: i64,
+}
+
 async fn images(State(dash): Shared) -> Result<Json<Vec<GalleryImage>>, ApiError> {
-    let dir = dash.app.output_dir();
-    let mut entries = match tokio::fs::read_dir(&dir).await {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Json(Vec::new())),
-        Err(e) => {
-            return Err(anyhow::Error::from(e)
-                .context(format!("reading {}", dir.display()))
-                .into());
-        }
-    };
-    let mut images = Vec::new();
-    while let Some(entry) = entries.next_entry().await.map_err(anyhow::Error::from)? {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let metadata = entry.metadata().await.map_err(anyhow::Error::from)?;
-        if !metadata.is_file() || image_mime(&name).is_none() {
-            continue;
-        }
-        let modified = metadata
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-            .map_or(0, |d| d.as_secs());
-        images.push(GalleryImage {
-            url: image_url(&name),
-            name,
-            bytes: metadata.len(),
-            modified,
-        });
-    }
-    images.sort_by(|a, b| {
-        b.modified
-            .cmp(&a.modified)
-            .then_with(|| b.name.cmp(&a.name))
-    });
-    images.truncate(GALLERY_LIMIT);
-    Ok(Json(images))
+    let images = dash.app.storage().list(GALLERY_LIMIT).await?;
+    Ok(Json(
+        images
+            .into_iter()
+            .map(|image| GalleryImage {
+                url: image_url(&image.key),
+                name: image.name,
+                bytes: image.bytes,
+                created: image.created,
+            })
+            .collect(),
+    ))
 }
 
-async fn image_file(State(dash): Shared, Path(name): Path<String>) -> Result<Response, ApiError> {
-    let mime = image_mime(&name)
-        .filter(|_| !name.contains(['/', '\\']) && !name.starts_with('.'))
+async fn image_file(State(dash): Shared, Path(key): Path<String>) -> Result<Response, ApiError> {
+    let (mime, data) = dash
+        .app
+        .storage()
+        .read(&key)
+        .await?
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "not found".into()))?;
-    let path: PathBuf = dash.app.output_dir().join(&name);
-    let data = tokio::fs::read(&path)
-        .await
-        .map_err(|_| ApiError(StatusCode::NOT_FOUND, "not found".into()))?;
-    Ok((
-        [(header::CONTENT_TYPE, HeaderValue::from_static(mime))],
-        data,
-    )
-        .into_response())
+    Ok(([(header::CONTENT_TYPE, mime)], data).into_response())
 }
 
-fn image_url(name: &str) -> String {
-    format!("/images/{name}")
-}
-
-/// The MIME type for a file name with an image extension this server writes.
-fn image_mime(name: &str) -> Option<&'static str> {
-    let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
-    ["image/png", "image/jpeg", "image/webp", "image/gif"]
-        .into_iter()
-        .find(|mime| extension_for(mime) == ext || (ext == "jpeg" && *mime == "image/jpeg"))
+fn image_url(key: &str) -> String {
+    format!("/images/{key}")
 }
 
 fn issuer(account: &str) -> Result<Issuer, ApiError> {
@@ -305,13 +260,16 @@ async fn start_login(
                 );
             let _ = prompt_tx.send(prompt.clone());
         };
-        let next =
-            match auth::login(issuer, &task.http, task.paths.token_file(issuer), on_prompt).await {
-                Ok(_) => LoginState::Connected,
-                Err(error) => LoginState::Failed {
-                    error: format!("{error:#}"),
-                },
-            };
+        let result = match auth::login(issuer, &task.http, on_prompt).await {
+            Ok(tokens) => task.app.storage().login_store(issuer).save(&tokens).await,
+            Err(error) => Err(error),
+        };
+        let next = match result {
+            Ok(()) => LoginState::Connected,
+            Err(error) => LoginState::Failed {
+                error: format!("{error:#}"),
+            },
+        };
         task.logins
             .lock()
             .expect("login state lock poisoned")
@@ -341,25 +299,10 @@ async fn logout(
     Path(account): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let issuer = issuer(&account)?;
-    let removed = auth::logout(&dash.paths.token_file(issuer))?;
+    let removed = dash.app.storage().login_store(issuer).delete().await?;
     dash.logins
         .lock()
         .expect("login state lock poisoned")
         .remove(issuer.id());
     Ok(Json(json!({ "removed": removed })))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_written_image_types_are_served() {
-        assert_eq!(image_mime("a.png"), Some("image/png"));
-        assert_eq!(image_mime("a.JPG"), Some("image/jpeg"));
-        assert_eq!(image_mime("a.jpeg"), Some("image/jpeg"));
-        assert_eq!(image_mime("a.webp"), Some("image/webp"));
-        assert_eq!(image_mime("config.toml"), None);
-        assert_eq!(image_mime("png"), None);
-    }
 }

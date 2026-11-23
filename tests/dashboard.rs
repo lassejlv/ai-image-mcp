@@ -2,7 +2,6 @@
 
 mod common;
 
-use ai_image_mcp::config::Paths;
 use ai_image_mcp::dashboard;
 use common::{PNG, app, png_b64};
 use serde_json::{Value, json};
@@ -28,10 +27,10 @@ async fn dashboard_generates_lists_and_serves_images() {
             out.display(),
             api.uri()
         ),
-    );
+    ).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let router = dashboard::router(app, Paths::new(home.path().to_path_buf()));
+    let router = dashboard::router(app);
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let http = reqwest::Client::new();
 

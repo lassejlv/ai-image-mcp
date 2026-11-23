@@ -13,6 +13,10 @@
 # Provider used when a request does not name one.
 default_provider = "grok"
 
+# Store saved logins and generated images in Postgres instead of local files.
+# AI_IMAGE_MCP_DATABASE_URL overrides this. Tables are created on startup.
+# database_url = "postgres://user:password@localhost:5432/ai_image_mcp"
+
 [output]
 # Where images are saved. Defaults to ~/Pictures/ai-image-mcp.
 dir = "~/Pictures/ai-image-mcp"

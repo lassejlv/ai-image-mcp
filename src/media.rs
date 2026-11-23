@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use serde::Serialize;
 
 use crate::config::expand_home;
 use crate::http::download_image;
@@ -49,14 +48,6 @@ fn to_input(data: Vec<u8>, declared: Option<&str>, origin: &str) -> anyhow::Resu
     })
 }
 
-/// A generated image written to disk.
-#[derive(Debug, Clone, Serialize)]
-pub struct SavedImage {
-    pub path: PathBuf,
-    pub mime_type: String,
-    pub bytes: usize,
-}
-
 /// Saves images under `dir` as `<stem>[-<n>].<ext>`, never overwriting existing files.
 ///
 /// The stem is `name` when given, otherwise a timestamp plus a slug of the prompt.
@@ -65,7 +56,7 @@ pub async fn save_images(
     name: Option<&str>,
     prompt: &str,
     images: &[GeneratedImage],
-) -> anyhow::Result<Vec<SavedImage>> {
+) -> anyhow::Result<Vec<PathBuf>> {
     tokio::fs::create_dir_all(dir)
         .await
         .with_context(|| format!("creating output directory {}", dir.display()))?;
@@ -87,11 +78,7 @@ pub async fn save_images(
         tokio::fs::write(&path, &image.data)
             .await
             .with_context(|| format!("writing {}", path.display()))?;
-        saved.push(SavedImage {
-            path,
-            mime_type: image.mime_type.clone(),
-            bytes: image.data.len(),
-        });
+        saved.push(path);
     }
     Ok(saved)
 }
@@ -159,15 +146,15 @@ mod tests {
         let second = save_images(dir.path(), Some("cover"), "", &[png()])
             .await
             .unwrap();
-        assert_eq!(first[0].path, dir.path().join("cover.png"));
-        assert_eq!(second[0].path, dir.path().join("cover-v2.png"));
+        assert_eq!(first[0], dir.path().join("cover.png"));
+        assert_eq!(second[0], dir.path().join("cover-v2.png"));
 
         let batch = save_images(dir.path(), Some("set"), "", &[png(), png()])
             .await
             .unwrap();
         let names: Vec<_> = batch
             .iter()
-            .map(|s| s.path.file_name().unwrap().to_owned())
+            .map(|p| p.file_name().unwrap().to_owned())
             .collect();
         assert_eq!(names, ["set-1.png", "set-2.png"]);
     }

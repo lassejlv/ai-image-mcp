@@ -4,7 +4,7 @@ mod common;
 
 use ai_image_mcp::app::GenerateImageArgs;
 use ai_image_mcp::image::{ImageSettings, Quality, Setting};
-use common::{PNG, app, jwt, png_b64, save_login};
+use common::{PNG, app, jwt, png_b64, save_login, saved_path};
 use serde_json::{Value, json};
 use wiremock::matchers::{body_partial_json, header, header_regex, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -41,7 +41,7 @@ async fn openai_generates_saves_and_reports_ignored_settings() {
             "[providers.openai]\ntype = \"openai\"\nbase_url = \"{}/v1\"\napi_key = \"sk-test\"\ndefaults = {{ quality = \"high\", extra = {{ moderation = \"low\" }} }}",
             server.uri()
         ),
-    );
+    ).await;
 
     let mut request = args("a fox", "openai", home.path());
     request.settings = ImageSettings {
@@ -54,7 +54,7 @@ async fn openai_generates_saves_and_reports_ignored_settings() {
     assert_eq!(outcome.images.len(), 2);
     assert_eq!(outcome.ignored_settings, vec![Setting::AspectRatio]);
     for image in &outcome.images {
-        assert_eq!(std::fs::read(&image.path).unwrap(), PNG);
+        assert_eq!(std::fs::read(saved_path(image)).unwrap(), PNG);
         assert_eq!(image.mime_type, "image/png");
     }
     assert!(
@@ -101,7 +101,7 @@ async fn openai_compatible_edits_upload_multipart_and_download_urls() {
             "[providers.together]\ntype = \"openai\"\nbase_url = \"{}/v1\"\napi_key = \"k\"\nmodel = \"flux-kontext\"",
             server.uri()
         ),
-    );
+    ).await;
 
     let mut request = args("make it blue", "together", home.path());
     request.input_images = vec![input.to_string_lossy().into_owned()];
@@ -109,7 +109,7 @@ async fn openai_compatible_edits_upload_multipart_and_download_urls() {
     let outcome = app.generate(request).await.unwrap();
 
     assert_eq!(outcome.model, "flux-kontext");
-    assert_eq!(outcome.images[0].path, home.path().join("blue.png"));
+    assert_eq!(saved_path(&outcome.images[0]), home.path().join("blue.png"));
 }
 
 #[tokio::test]
@@ -137,9 +137,10 @@ async fn xai_uses_the_supergrok_login_before_an_api_key() {
             "[providers.grok]\ntype = \"xai\"\nbase_url = \"{}/v1\"\napi_key = \"unused\"",
             server.uri()
         ),
-    );
+    )
+    .await;
 
-    let info = &app.providers()[0];
+    let info = &app.providers().await[0];
     assert!(info.ready);
     assert!(info.auth.contains("SuperGrok"), "{}", info.auth);
 
@@ -178,7 +179,8 @@ async fn codex_sends_the_chatgpt_account_and_edits_with_data_urls() {
             "[providers.chatgpt]\ntype = \"codex\"\nbase_url = \"{}/backend-api/codex\"",
             server.uri()
         ),
-    );
+    )
+    .await;
 
     let mut request = args("add a red hat", "chatgpt", home.path());
     request.input_images = vec![format!("data:image/png;base64,{}", png_b64())];
@@ -202,8 +204,9 @@ async fn codex_falls_back_to_the_codex_cli_login() {
             "[providers.chatgpt]\ntype = \"codex\"\ncodex_home = \"{}\"",
             codex_home.display()
         ),
-    );
-    let info = &app.providers()[0];
+    )
+    .await;
+    let info = &app.providers().await[0];
     assert!(info.ready);
     assert!(info.auth.contains("Codex CLI login"), "{}", info.auth);
 }
@@ -233,7 +236,8 @@ async fn gemini_makes_one_call_per_image() {
             "[providers.gemini]\ntype = \"gemini\"\nbase_url = \"{}/v1beta\"\napi_key = \"g-key\"",
             server.uri()
         ),
-    );
+    )
+    .await;
 
     let mut request = args("a banana", "gemini", home.path());
     request.model = Some("gemini-3-pro-image".into());
@@ -277,7 +281,8 @@ async fn fal_posts_to_the_model_path_and_downloads_results() {
             "[providers.fal]\ntype = \"fal\"\nbase_url = \"{}\"\napi_key = \"fal-key\"",
             server.uri()
         ),
-    );
+    )
+    .await;
 
     let mut request = args("koi", "fal", home.path());
     request.settings = ImageSettings {
@@ -286,7 +291,7 @@ async fn fal_posts_to_the_model_path_and_downloads_results() {
         ..Default::default()
     };
     let outcome = app.generate(request).await.unwrap();
-    assert_eq!(std::fs::read(&outcome.images[0].path).unwrap(), PNG);
+    assert_eq!(std::fs::read(saved_path(&outcome.images[0])).unwrap(), PNG);
 }
 
 #[tokio::test]
@@ -305,7 +310,8 @@ async fn provider_errors_carry_the_service_message() {
             "[providers.openai]\ntype = \"openai\"\nbase_url = \"{}\"\napi_key = \"k\"",
             server.uri()
         ),
-    );
+    )
+    .await;
 
     let error = app
         .generate(args("x", "openai", home.path()))
@@ -321,9 +327,10 @@ async fn disconnected_providers_explain_how_to_connect() {
     let app = app(
         home.path(),
         "[providers.grok]\ntype = \"xai\"\napi_key_env = \"AI_IMAGE_MCP_TEST_UNSET\"",
-    );
+    )
+    .await;
 
-    let info = &app.providers()[0];
+    let info = &app.providers().await[0];
     assert!(!info.ready);
     let error = app
         .generate(args("x", "grok", home.path()))

@@ -139,11 +139,11 @@ async fn main() -> anyhow::Result<()> {
     let paths = Paths::from_env()?;
     let config = cli.config.as_deref();
     match cli.command.unwrap_or(Command::Serve) {
-        Command::Serve => serve(App::load(config, &paths)?).await,
-        Command::Login { account } => login(account, &paths).await,
+        Command::Serve => serve(App::load(config, &paths).await?).await,
+        Command::Login { account } => login(account, &App::load(config, &paths).await?).await,
         Command::Logout { account } => {
-            let path = paths.token_file(account.issuer());
-            if auth::logout(&path)? {
+            let app = App::load(config, &paths).await?;
+            if app.storage().login_store(account.issuer()).delete().await? {
                 println!("Removed the {} login.", account.issuer().display_name());
             } else {
                 println!("No saved {} login.", account.issuer().display_name());
@@ -151,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Providers => {
-            for info in App::load(config, &paths)?.providers() {
+            for info in App::load(config, &paths).await?.providers().await {
                 let marker = if info.default { " (default)" } else { "" };
                 let state = if info.ready { "ready" } else { "off" };
                 println!(
@@ -165,13 +165,13 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Generate(command) => {
-            let app = App::load(config, &paths)?;
+            let app = App::load(config, &paths).await?;
             let outcome = app.generate(command.into_args()?).await?;
             println!("{}", outcome.summary());
             Ok(())
         }
         Command::Dashboard { port } => {
-            dashboard::serve(App::load(config, &paths)?, paths, port).await
+            dashboard::serve(App::load(config, &paths).await?, port).await
         }
     }
 }
@@ -185,19 +185,20 @@ async fn serve(app: App) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn login(account: Account, paths: &Paths) -> anyhow::Result<()> {
+async fn login(account: Account, app: &App) -> anyhow::Result<()> {
     let issuer = account.issuer();
-    let path = paths.token_file(issuer);
     let http = reqwest::Client::builder()
         .user_agent(concat!("ai-image-mcp/", env!("CARGO_PKG_VERSION")))
         .build()?;
-    auth::login(issuer, &http, path.clone(), |prompt| {
+    let tokens = auth::login(issuer, &http, |prompt| {
         println!("Sign in to {}:", issuer.display_name());
         println!("  1. Open {}", prompt.verification_uri);
         println!("  2. Enter the code {}", prompt.user_code);
         println!("Waiting for approval...");
     })
     .await?;
-    println!("Connected. Saved to {}", path.display());
+    let store = app.storage().login_store(issuer);
+    store.save(&tokens).await?;
+    println!("Connected. Saved to {}", store.describe());
     Ok(())
 }

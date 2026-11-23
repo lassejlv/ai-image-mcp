@@ -9,5 +9,6 @@ pub mod image;
 pub mod media;
 pub mod providers;
 pub mod server;
+pub mod storage;
 
 mod http;

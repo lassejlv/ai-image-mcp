@@ -15,10 +15,13 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::auth::{ApiKey, Auth, AuthMethod, Bearer, Credential, Issuer, OAuthGrant};
-use crate::config::{AuthMode, Config, Paths, ProviderConfig, expand_home};
+use crate::auth::{
+    ApiKey, Auth, AuthMethod, Bearer, Credential, Issuer, OAuthGrant, TokenFile, TokenStore,
+};
+use crate::config::{AuthMode, Config, ProviderConfig, expand_home};
 use crate::http;
 use crate::image::{GeneratedImage, ImageRequest, ImageSettings, InputImage, Setting};
+use crate::storage::Storage;
 
 /// Default request timeout; high-quality generations can take minutes.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
@@ -220,6 +223,8 @@ pub struct Generation {
     pub provider: String,
     pub model: String,
     pub images: Vec<GeneratedImage>,
+    /// The settings sent, after applying the provider's defaults.
+    pub settings: ImageSettings,
     /// Requested settings this provider does not support and therefore did not apply.
     pub ignored: Vec<Setting>,
 }
@@ -267,12 +272,12 @@ impl Entry {
         }
     }
 
-    pub fn is_ready(&self) -> bool {
-        self.client().auth.status().ready()
+    pub async fn is_ready(&self) -> bool {
+        self.client().auth.status().await.ready()
     }
 
-    pub fn info(&self, is_default: bool) -> ProviderInfo {
-        let status = self.client().auth.status();
+    pub async fn info(&self, is_default: bool) -> ProviderInfo {
+        let status = self.client().auth.status().await;
         ProviderInfo {
             name: self.name.clone(),
             kind: self.kind,
@@ -334,6 +339,7 @@ impl Entry {
             provider: self.name.clone(),
             model: request.model,
             images,
+            settings: request.settings,
             ignored,
         })
     }
@@ -347,12 +353,12 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub fn from_config(config: &Config, paths: &Paths) -> anyhow::Result<Self> {
+    pub fn from_config(config: &Config, storage: &Storage) -> anyhow::Result<Self> {
         let entries = config
             .provider_configs()
             .into_iter()
             .map(|(name, cfg)| {
-                let entry = build_entry(&name, cfg, paths)
+                let entry = build_entry(&name, cfg, storage)
                     .with_context(|| format!("setting up provider \"{name}\""))?;
                 Ok((name, entry))
             })
@@ -364,21 +370,25 @@ impl Registry {
     }
 
     /// The configured default, else the first provider that is connected.
-    pub fn default_name(&self) -> Option<&str> {
-        self.default.as_deref().or_else(|| {
-            self.entries
-                .values()
-                .find(|e| e.is_ready())
-                .map(Entry::name)
-        })
+    pub async fn default_name(&self) -> Option<&str> {
+        if let Some(default) = &self.default {
+            return Some(default);
+        }
+        for entry in self.entries.values() {
+            if entry.is_ready().await {
+                return Some(entry.name());
+            }
+        }
+        None
     }
 
     /// Looks up a provider by name, or the default when `name` is `None`.
-    pub fn get(&self, name: Option<&str>) -> anyhow::Result<&Entry> {
-        let Some(name) = name
-            .filter(|n| !n.trim().is_empty())
-            .or_else(|| self.default_name())
-        else {
+    pub async fn get(&self, name: Option<&str>) -> anyhow::Result<&Entry> {
+        let name = match name.filter(|n| !n.trim().is_empty()) {
+            Some(name) => Some(name),
+            None => self.default_name().await,
+        };
+        let Some(name) = name else {
             bail!(
                 "no provider is connected; run `ai-image-mcp login xai`, `ai-image-mcp login codex`, or set an API key"
             );
@@ -392,16 +402,17 @@ impl Registry {
         })
     }
 
-    pub fn infos(&self) -> Vec<ProviderInfo> {
-        let default = self.default_name();
-        self.entries
-            .values()
-            .map(|entry| entry.info(Some(entry.name()) == default))
-            .collect()
+    pub async fn infos(&self) -> Vec<ProviderInfo> {
+        let default = self.default_name().await;
+        let mut infos = Vec::with_capacity(self.entries.len());
+        for entry in self.entries.values() {
+            infos.push(entry.info(Some(entry.name()) == default).await);
+        }
+        infos
     }
 }
 
-fn build_entry(name: &str, cfg: ProviderConfig, paths: &Paths) -> anyhow::Result<Entry> {
+fn build_entry(name: &str, cfg: ProviderConfig, storage: &Storage) -> anyhow::Result<Entry> {
     let kind = cfg.kind;
     let env = cfg
         .api_key_env
@@ -415,8 +426,12 @@ fn build_entry(name: &str, cfg: ProviderConfig, paths: &Paths) -> anyhow::Result
     };
     let (credentials, hint) = match kind {
         ProviderKind::Xai => {
-            let oauth =
-                || Credential::OAuth(OAuthGrant::own(Issuer::Xai, paths.token_file(Issuer::Xai)));
+            let oauth = || {
+                Credential::OAuth(OAuthGrant::new(
+                    Issuer::Xai,
+                    storage.login_store(Issuer::Xai),
+                ))
+            };
             match cfg.auth {
                 AuthMode::Oauth => (vec![oauth()], "run `ai-image-mcp login xai`".to_owned()),
                 AuthMode::ApiKey => (vec![api_key()], format!("set {env}")),
@@ -428,14 +443,17 @@ fn build_entry(name: &str, cfg: ProviderConfig, paths: &Paths) -> anyhow::Result
         }
         ProviderKind::Codex => {
             let own = || {
-                Credential::OAuth(OAuthGrant::own(
+                Credential::OAuth(OAuthGrant::new(
                     Issuer::ChatGpt,
-                    paths.token_file(Issuer::ChatGpt),
+                    storage.login_store(Issuer::ChatGpt),
                 ))
             };
             let codex_cli = || {
-                Credential::OAuth(OAuthGrant::codex_cli(
-                    codex_home(cfg.codex_home.as_deref()).join("auth.json"),
+                Credential::OAuth(OAuthGrant::new(
+                    Issuer::ChatGpt,
+                    TokenStore::File(TokenFile::CodexCli(
+                        codex_home(cfg.codex_home.as_deref()).join("auth.json"),
+                    )),
                 ))
             };
             let credentials = match cfg.auth {

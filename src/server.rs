@@ -57,7 +57,7 @@ impl ImageServer {
         description = "List the configured image providers: whether each is connected, its default and suggested models, the settings it supports, and how many input images it accepts for edits."
     )]
     async fn list_providers(&self) -> Result<CallToolResult, McpError> {
-        let providers = json!({ "providers": self.app.providers() });
+        let providers = json!({ "providers": self.app.providers().await });
         let text = serde_json::to_string_pretty(&providers)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);

@@ -12,6 +12,8 @@ use crate::providers::ProviderKind;
 
 /// Overrides the directory holding the config file and saved logins.
 pub const HOME_ENV: &str = "AI_IMAGE_MCP_HOME";
+/// Postgres URL; overrides `database_url` in the config file.
+pub const DATABASE_URL_ENV: &str = "AI_IMAGE_MCP_DATABASE_URL";
 
 /// Where configuration and credentials live.
 #[derive(Debug, Clone)]
@@ -55,6 +57,9 @@ impl Paths {
 pub struct Config {
     /// Provider used when a request names none. Defaults to the first connected provider.
     pub default_provider: Option<String>,
+    /// Postgres URL. When set, saved logins and generated images live in the database
+    /// instead of local files.
+    pub database_url: Option<String>,
     #[serde(default)]
     pub output: OutputConfig,
     /// Named providers, in priority order. When empty, every built-in provider is offered.
@@ -74,6 +79,14 @@ impl Config {
             toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
         config.validate()?;
         Ok(config)
+    }
+
+    /// `$AI_IMAGE_MCP_DATABASE_URL`, else `database_url` from the file.
+    pub fn database_url(&self) -> Option<String> {
+        std::env::var(DATABASE_URL_ENV)
+            .ok()
+            .or_else(|| self.database_url.clone())
+            .filter(|url| !url.trim().is_empty())
     }
 
     fn validate(&self) -> anyhow::Result<()> {
