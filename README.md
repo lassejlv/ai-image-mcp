@@ -18,6 +18,15 @@ Every request can pick the provider, the model, and the generation settings. Ima
 cargo install --git https://github.com/lassejlv/ai-image-mcp
 ```
 
+Or run it with Docker (`linux/amd64` and `linux/arm64`, published on every release):
+
+```sh
+docker run -it --rm -v ai-image-mcp:/data ghcr.io/lassejlv/ai-image-mcp login xai
+docker run -i --rm -v ai-image-mcp:/data -v ~/Pictures/ai-image-mcp:/home/nonroot/ai-image-mcp ghcr.io/lassejlv/ai-image-mcp
+```
+
+The `/data` volume keeps the config and saved logins. Generated images go to `/home/nonroot/ai-image-mcp` inside the container, so mount a host folder there that UID 65532 can write to. Pass API keys with `-e OPENAI_API_KEY`.
+
 ## Connect a provider
 
 Subscriptions use the device-code login, so it works over SSH and on headless machines too:
