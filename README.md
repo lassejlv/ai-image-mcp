@@ -8,9 +8,9 @@ An MCP server, written in Rust on the official [`rmcp`](https://github.com/model
 | --- | --- | --- |
 | `xai` | SuperGrok or X Premium+ login, or `XAI_API_KEY` | `grok-imagine-image-2.0` |
 | `codex` | ChatGPT plan with Codex: own login or the Codex CLI's login | `gpt-image-2` |
-| `openai` | `OPENAI_API_KEY`, or any OpenAI-compatible service via `base_url` | `gpt-image-2` |
+| `openai` | `OPENAI_API_KEY`, or any OpenAI-compatible service via `base_url` | `gpt-image-2.6-flare` |
 | `gemini` | `GEMINI_API_KEY` | `gemini-nano-banana-2.1` |
-| `fal` | `FAL_KEY`, with any model in fal's catalog | `fal-ai/flux/dev` |
+| `fal` | `FAL_KEY`, with any model in fal's catalog | `google/nano-banana-2.1` |
 
 Every request can pick the provider, the model, and the generation settings. Images are saved to disk and also returned inline to the client.
 
@@ -127,7 +127,7 @@ Access tokens last an hour, and refresh tokens last 30 days. Client ids, codes, 
 
 A setting the chosen provider does not support is reported back as not applied rather than silently dropped.
 
-**`list_providers`** reports each provider's connection state, default and suggested models, supported settings, and how many input images it accepts.
+**`list_providers`** reports each provider's connection state, its default model, the image models it offers right now, its supported settings, and how many input images it accepts. Model lists are fetched from each provider's own API: OpenAI `GET /models`, xAI `GET /image-generation-models`, Gemini `models.list`, and fal's model catalog. They are cached for 10 minutes. The built-in list is used only when a provider isn't connected or its API fails, and for the Codex backend, which has no model listing.
 
 ## Configuration
 

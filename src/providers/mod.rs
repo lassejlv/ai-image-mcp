@@ -8,7 +8,7 @@ mod openai;
 mod xai;
 
 use std::future::Future;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail, ensure};
 use indexmap::IndexMap;
@@ -23,6 +23,10 @@ use crate::http;
 use crate::image::{GeneratedImage, ImageRequest, ImageSettings, InputImage, Setting};
 use crate::storage::Storage;
 
+/// How long a fetched model list is reused before asking the provider again.
+const MODELS_TTL: Duration = Duration::from_secs(10 * 60);
+/// How long listing models may take before the fallback list is shown instead.
+const MODELS_TIMEOUT: Duration = Duration::from_secs(10);
 /// Default request timeout; high-quality generations can take minutes.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 /// The most images any provider accepts per request.
@@ -65,31 +69,40 @@ impl ProviderKind {
     }
 
     pub fn default_model(self) -> &'static str {
-        self.known_models()[0]
+        self.fallback_models()[0]
     }
 
-    /// Models to suggest; any model id the service accepts can be requested.
-    pub fn known_models(self) -> &'static [&'static str] {
+    /// Models offered when the provider's own model list can't be fetched; the first is the
+    /// default. Any model id the service accepts can be requested.
+    pub fn fallback_models(self) -> &'static [&'static str] {
         match self {
             Self::Xai => &[
                 "grok-imagine-image-2.0",
-                "grok-imagine-image",
                 "grok-imagine-image-quality",
+                "grok-imagine-image",
             ],
-            Self::Codex => &["gpt-image-2"],
-            Self::OpenAi => &["gpt-image-2", "gpt-image-1.5", "gpt-image-1-mini"],
+            Self::Codex => &[
+                "gpt-image-2",
+                "gpt-image-2.6-sunburst",
+                "gpt-image-2.6-flare",
+            ],
+            Self::OpenAi => &[
+                "gpt-image-2.6-flare",
+                "gpt-image-2.6-sunburst",
+                "gpt-image-2.5-flare",
+                "gpt-image-2.5-sunburst",
+                "gpt-image-2",
+            ],
             Self::Gemini => &[
                 "gemini-nano-banana-2.1",
                 "gemini-3-pro-image",
-                "gemini-3.1-flash-image",
                 "gemini-3.1-flash-lite-image",
             ],
             Self::Fal => &[
-                "fal-ai/flux/dev",
-                "fal-ai/flux-2",
-                "fal-ai/flux-2/edit",
+                "google/nano-banana-2.1",
+                "blackforestlabs/flux-3/text-to-image",
                 "fal-ai/nano-banana-pro",
-                "fal-ai/recraft/v3/text-to-image",
+                "fal-ai/flux/dev",
             ],
         }
     }
@@ -161,6 +174,18 @@ pub enum Provider {
 }
 
 impl Provider {
+    /// The provider's current image models, from its own API. `None` when it has no
+    /// listing endpoint.
+    async fn models(&self) -> Option<anyhow::Result<Vec<String>>> {
+        match self {
+            Self::Xai(p) => Some(p.models().await),
+            Self::Codex(_) => None,
+            Self::OpenAi(p) => Some(p.models().await),
+            Self::Gemini(p) => Some(p.models().await),
+            Self::Fal(p) => Some(p.models().await),
+        }
+    }
+
     async fn generate(&self, request: &ImageRequest) -> anyhow::Result<Vec<GeneratedImage>> {
         match self {
             Self::Xai(p) => p.generate(request).await,
@@ -215,6 +240,8 @@ pub struct Entry {
     model: String,
     defaults: ImageSettings,
     provider: Provider,
+    /// The last model list fetched from the provider, and when.
+    models_cache: tokio::sync::Mutex<Option<(Instant, Vec<String>)>>,
 }
 
 /// What a finished generation produced.
@@ -244,7 +271,10 @@ pub struct ProviderInfo {
     pub login: Option<&'static str>,
     pub default: bool,
     pub default_model: String,
-    pub suggested_models: Vec<&'static str>,
+    /// Image models to choose from, newest first where the provider says.
+    pub models: Vec<String>,
+    /// Whether `models` came from the provider's API rather than the built-in fallback.
+    pub models_live: bool,
     pub settings: Vec<Setting>,
     pub max_input_images: usize,
     #[serde(skip_serializing_if = "ImageSettings::is_empty")]
@@ -276,8 +306,42 @@ impl Entry {
         self.client().auth.status().await.ready()
     }
 
+    /// The provider's model list, fetched live when it is connected and cached for a while;
+    /// the built-in fallback otherwise.
+    pub async fn models(&self, ready: bool) -> (Vec<String>, bool) {
+        let fallback = || {
+            self.kind
+                .fallback_models()
+                .iter()
+                .map(|m| (*m).to_owned())
+                .collect()
+        };
+        if !ready && self.kind != ProviderKind::Fal {
+            return (fallback(), false);
+        }
+        let mut cache = self.models_cache.lock().await;
+        if let Some((fetched, models)) = cache.as_ref()
+            && fetched.elapsed() < MODELS_TTL
+        {
+            return (models.clone(), true);
+        }
+        let fetched = tokio::time::timeout(MODELS_TIMEOUT, self.provider.models()).await;
+        match fetched {
+            Ok(Some(Ok(models))) if !models.is_empty() => {
+                *cache = Some((Instant::now(), models.clone()));
+                (models, true)
+            }
+            Ok(Some(Err(error))) => {
+                tracing::warn!(provider = %self.name, "listing models failed: {error:#}");
+                (fallback(), false)
+            }
+            _ => (fallback(), false),
+        }
+    }
+
     pub async fn info(&self, is_default: bool) -> ProviderInfo {
         let status = self.client().auth.status().await;
+        let (models, models_live) = self.models(status.ready()).await;
         ProviderInfo {
             name: self.name.clone(),
             kind: self.kind,
@@ -287,7 +351,8 @@ impl Entry {
             login: self.kind.login_account(),
             default: is_default,
             default_model: self.model.clone(),
-            suggested_models: self.kind.known_models().to_vec(),
+            models,
+            models_live,
             settings: self.kind.settings().to_vec(),
             max_input_images: self.kind.max_input_images(),
             defaults: self.defaults.clone(),
@@ -404,11 +469,12 @@ impl Registry {
 
     pub async fn infos(&self) -> Vec<ProviderInfo> {
         let default = self.default_name().await;
-        let mut infos = Vec::with_capacity(self.entries.len());
-        for entry in self.entries.values() {
-            infos.push(entry.info(Some(entry.name()) == default).await);
-        }
-        infos
+        futures::future::join_all(
+            self.entries
+                .values()
+                .map(|entry| entry.info(Some(entry.name()) == default)),
+        )
+        .await
     }
 }
 
@@ -500,6 +566,7 @@ fn build_entry(name: &str, cfg: ProviderConfig, storage: &Storage) -> anyhow::Re
         model: cfg.model.unwrap_or_else(|| kind.default_model().to_owned()),
         defaults: cfg.defaults,
         provider,
+        models_cache: tokio::sync::Mutex::new(None),
     })
 }
 
@@ -522,6 +589,14 @@ fn codex_home(configured: Option<&std::path::Path>) -> std::path::PathBuf {
         .map(std::path::PathBuf::from)
         .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
         .unwrap_or_else(|| ".codex".into())
+}
+
+/// Model ids ordered newest first by their creation time, then by id.
+fn newest_first(models: impl IntoIterator<Item = (i64, String)>) -> Vec<String> {
+    let mut models: Vec<(i64, String)> = models.into_iter().collect();
+    models.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    models.dedup_by(|a, b| a.1 == b.1);
+    models.into_iter().map(|(_, id)| id).collect()
 }
 
 /// Merges `patch` into `target`: objects merge key by key, anything else replaces.

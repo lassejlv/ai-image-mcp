@@ -79,6 +79,43 @@ async fn fetch(http: &reqwest::Client, image: FalImage) -> anyhow::Result<Genera
     })
 }
 
+/// fal's model catalog lives on its platform API, not on `fal.run`.
+const CATALOG_URL: &str = "https://api.fal.ai/v1/models";
+const DEFAULT_RUN_URL: &str = "https://fal.run";
+/// Catalog entries to offer; fal returns them in trending order.
+const CATALOG_LIMIT: u32 = 50;
+
+#[derive(Debug, Deserialize)]
+struct Catalog {
+    #[serde(default)]
+    models: Vec<CatalogEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatalogEntry {
+    endpoint_id: String,
+}
+
+impl Fal {
+    /// Active text-to-image endpoints from fal's catalog, in fal's trending order. Works
+    /// without a key; with one, fal allows more requests.
+    pub async fn models(&self) -> anyhow::Result<Vec<String>> {
+        let c = &self.client;
+        let base = if c.base_url.trim_end_matches('/') == DEFAULT_RUN_URL {
+            CATALOG_URL.to_owned()
+        } else {
+            c.url("v1/models")
+        };
+        let url = format!("{base}?category=text-to-image&status=active&limit={CATALOG_LIMIT}");
+        let mut request = c.http.get(url);
+        if let Ok(bearer) = c.auth.bearer(&c.http, false).await {
+            request = request.header("Authorization", format!("Key {}", bearer.token));
+        }
+        let catalog: Catalog = http::json(&c.name, request.send().await?).await?;
+        Ok(catalog.models.into_iter().map(|m| m.endpoint_id).collect())
+    }
+}
+
 fn request_body(request: &ImageRequest) -> Map<String, Value> {
     let s = &request.settings;
     let mut body = Map::new();

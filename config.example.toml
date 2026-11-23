@@ -41,7 +41,7 @@ defaults = { quality = "high" }
 [providers.openai]
 type = "openai"
 api_key_env = "OPENAI_API_KEY"
-model = "gpt-image-2"
+model = "gpt-image-2.6-flare"
 
 # Any OpenAI-compatible images endpoint.
 [providers.together]

@@ -4,7 +4,7 @@ use anyhow::bail;
 use serde_json::{Map, Value, json};
 
 use super::images_api::ImagesResponse;
-use super::{Client, merge_json, put};
+use super::{Client, merge_json, newest_first, put};
 use crate::http;
 use crate::image::{GeneratedImage, ImageRequest, Quality};
 
@@ -35,6 +35,39 @@ impl Xai {
             })
             .await?;
         response.into_images(&c.http).await
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ModelList {
+    models: Vec<ModelEntry>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ModelEntry {
+    id: String,
+    #[serde(default)]
+    created: i64,
+}
+
+impl Xai {
+    /// Models from `GET /image-generation-models`, newest first.
+    pub async fn models(&self) -> anyhow::Result<Vec<String>> {
+        let c = &self.client;
+        let list: ModelList = c
+            .authorized(|bearer| async move {
+                let sent = c
+                    .http
+                    .get(c.url("image-generation-models"))
+                    .bearer_auth(bearer.token)
+                    .send()
+                    .await?;
+                http::json(&c.name, sent).await
+            })
+            .await?;
+        Ok(newest_first(
+            list.models.into_iter().map(|m| (m.created, m.id)),
+        ))
     }
 }
 

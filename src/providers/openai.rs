@@ -5,7 +5,7 @@ use reqwest::multipart::{Form, Part};
 use serde_json::{Map, Value, json};
 
 use super::images_api::ImagesResponse;
-use super::{Client, merge_json, put};
+use super::{Client, merge_json, newest_first, put};
 use crate::http;
 use crate::image::{GeneratedImage, ImageRequest, extension_for};
 
@@ -45,6 +45,49 @@ impl OpenAi {
             .await?
         };
         response.into_images(&c.http).await
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ModelList {
+    data: Vec<ModelEntry>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ModelEntry {
+    id: String,
+    #[serde(default)]
+    created: i64,
+    /// Set by some compatible services (e.g. Together) to `"image"`.
+    #[serde(rename = "type")]
+    kind: Option<String>,
+}
+
+impl OpenAi {
+    /// Image models from `GET /models`, newest first.
+    pub async fn models(&self) -> anyhow::Result<Vec<String>> {
+        let c = &self.client;
+        let list: ModelList = c
+            .authorized(|bearer| async move {
+                let sent = c
+                    .http
+                    .get(c.url("models"))
+                    .bearer_auth(bearer.token)
+                    .send()
+                    .await?;
+                http::json(&c.name, sent).await
+            })
+            .await?;
+        Ok(newest_first(
+            list.data
+                .into_iter()
+                .filter(|m| {
+                    m.id.contains("image")
+                        || m.id.starts_with("dall-e")
+                        || m.kind.as_deref() == Some("image")
+                })
+                .map(|m| (m.created, m.id)),
+        ))
     }
 }
 

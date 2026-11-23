@@ -29,7 +29,7 @@ async fn openai_generates_saves_and_reports_ignored_settings() {
     Mock::given(method("POST"))
         .and(path("/v1/images/generations"))
         .and(header("authorization", "Bearer sk-test"))
-        .and(body_partial_json(json!({"model": "gpt-image-2", "prompt": "a fox", "n": 2, "quality": "high", "moderation": "low"})))
+        .and(body_partial_json(json!({"model": "gpt-image-2.6-flare", "prompt": "a fox", "n": 2, "quality": "high", "moderation": "low"})))
         .respond_with(images_response(2))
         .expect(1)
         .mount(&server)
@@ -285,6 +285,7 @@ async fn fal_posts_to_the_model_path_and_downloads_results() {
     .await;
 
     let mut request = args("koi", "fal", home.path());
+    request.model = Some("fal-ai/flux/dev".into());
     request.settings = ImageSettings {
         seed: Some(7),
         size: Some("1280x720".into()),
@@ -340,4 +341,158 @@ async fn disconnected_providers_explain_how_to_connect() {
         format!("{error:#}").contains("ai-image-mcp login xai"),
         "{error:#}"
     );
+}
+
+#[tokio::test]
+async fn model_lists_are_fetched_from_each_provider() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/openai/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": [
+            {"id": "gpt-image-2", "created": 100},
+            {"id": "gpt-6.2-sol", "created": 300},
+            {"id": "gpt-image-2.6-flare", "created": 200},
+            {"id": "black-forest-labs/FLUX.2", "created": 50, "type": "image"}
+        ]})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/xai/image-generation-models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": [
+            {"id": "grok-imagine-image", "created": 1},
+            {"id": "grok-imagine-image-3.0", "created": 9}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/gemini/models"))
+        .and(wiremock::matchers::query_param("pageToken", "p2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": [
+            {"name": "models/gemini-3-pro-image", "supportedGenerationMethods": ["generateContent"]}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/gemini/models"))
+        .and(wiremock::matchers::query_param_is_missing("pageToken"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": [
+            {"name": "models/gemini-nano-banana-2.1", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-6-pro", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/imagen-5", "supportedGenerationMethods": ["predict"]}
+        ], "nextPageToken": "p2"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/fal/v1/models"))
+        .and(wiremock::matchers::query_param("category", "text-to-image"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": [
+            {"endpoint_id": "google/nano-banana-2.1"}, {"endpoint_id": "fal-ai/flux/dev"}
+        ]})))
+        .mount(&server)
+        .await;
+    let home = tempfile::tempdir().unwrap();
+    let uri = server.uri();
+    let app = app(
+        home.path(),
+        &format!(
+            r#"
+            [providers.openai]
+            type = "openai"
+            base_url = "{uri}/openai"
+            api_key = "k"
+            [providers.grok]
+            type = "xai"
+            base_url = "{uri}/xai"
+            api_key = "k"
+            [providers.gemini]
+            type = "gemini"
+            base_url = "{uri}/gemini"
+            api_key = "k"
+            [providers.fal]
+            type = "fal"
+            base_url = "{uri}/fal"
+            api_key = "k"
+            [providers.chatgpt]
+            type = "codex"
+            codex_home = "{}/none"
+            "#,
+            home.path().display()
+        ),
+    )
+    .await;
+
+    let infos = app.providers().await;
+    let models = |name: &str| {
+        let info = infos.iter().find(|i| i.name == name).unwrap();
+        (info.models.clone(), info.models_live)
+    };
+    assert_eq!(
+        models("openai"),
+        (
+            vec![
+                "gpt-image-2.6-flare".to_owned(),
+                "gpt-image-2".to_owned(),
+                "black-forest-labs/FLUX.2".to_owned()
+            ],
+            true
+        )
+    );
+    assert_eq!(
+        models("grok"),
+        (
+            vec![
+                "grok-imagine-image-3.0".to_owned(),
+                "grok-imagine-image".to_owned()
+            ],
+            true
+        )
+    );
+    assert_eq!(
+        models("gemini"),
+        (
+            vec![
+                "gemini-nano-banana-2.1".to_owned(),
+                "gemini-3-pro-image".to_owned()
+            ],
+            true
+        )
+    );
+    assert_eq!(
+        models("fal"),
+        (
+            vec![
+                "google/nano-banana-2.1".to_owned(),
+                "fal-ai/flux/dev".to_owned()
+            ],
+            true
+        )
+    );
+    let (codex, live) = models("chatgpt");
+    assert!(!live && codex.contains(&"gpt-image-2.6-sunburst".to_owned()));
+
+    app.providers().await;
+    // `expect(1)` on the OpenAI mock checks the second call was served from the cache.
+}
+
+#[tokio::test]
+async fn model_listing_falls_back_when_the_provider_fails() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    let home = tempfile::tempdir().unwrap();
+    let app = app(
+        home.path(),
+        &format!(
+            "[providers.openai]\ntype = \"openai\"\nbase_url = \"{}\"\napi_key = \"k\"",
+            server.uri()
+        ),
+    )
+    .await;
+    let info = &app.providers().await[0];
+    assert!(!info.models_live);
+    assert_eq!(info.models[0], "gpt-image-2.6-flare");
+    assert_eq!(info.default_model, "gpt-image-2.6-flare");
 }

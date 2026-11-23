@@ -59,7 +59,7 @@ impl ImageServer {
     }
 
     #[tool(
-        description = "List the configured image providers: whether each is connected, its default and suggested models, the settings it supports, and how many input images it accepts for edits."
+        description = "List the configured image providers: whether each is connected, its default model, the image models it offers right now (fetched from the provider's API), the settings it supports, and how many input images it accepts for edits."
     )]
     async fn list_providers(&self) -> Result<CallToolResult, McpError> {
         let providers = json!({ "providers": self.app.providers().await });

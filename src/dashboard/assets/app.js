@@ -104,7 +104,7 @@ function renderProviderSelect() {
 function renderProviderOptions() {
   const provider = selectedProvider();
   const form = $("#generate");
-  $("#models").replaceChildren(...(provider ? provider.suggested_models : []).map((m) => el("option", { value: m })));
+  $("#models").replaceChildren(...(provider ? provider.models : []).map((m) => el("option", { value: m })));
   form.model.placeholder = provider ? provider.default_model : "";
 
   const container = $("#settings");
