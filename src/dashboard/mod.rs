@@ -27,6 +27,7 @@ const GALLERY_LIMIT: usize = 120;
 const INDEX_HTML: &str = include_str!("assets/index.html");
 const APP_CSS: &str = include_str!("assets/app.css");
 const APP_JS: &str = include_str!("assets/app.js");
+const LOGO_SVG: &str = include_str!("../../assets/logo.svg");
 
 struct Dashboard {
     app: App,
@@ -72,6 +73,10 @@ pub fn router(app: App) -> Router {
         .route(
             "/app.js",
             get(|| async { asset("text/javascript; charset=utf-8", APP_JS) }),
+        )
+        .route(
+            "/favicon.svg",
+            get(|| async { asset("image/svg+xml", LOGO_SVG) }),
         )
         .route("/api/providers", get(providers))
         .route("/api/generate", post(generate))

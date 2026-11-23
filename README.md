@@ -1,3 +1,5 @@
+<img src="assets/logo.svg" width="96" alt="" />
+
 # ai-image-mcp
 
 An MCP server, written in Rust on the official [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk) SDK, that lets any MCP client generate and edit images through the subscription or API key you already have:
