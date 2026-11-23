@@ -496,3 +496,49 @@ async fn model_listing_falls_back_when_the_provider_fails() {
     assert_eq!(info.models[0], "gpt-image-2.6-flare");
     assert_eq!(info.default_model, "gpt-image-2.6-flare");
 }
+
+#[tokio::test]
+async fn quiver_generates_svgs_and_saves_them_as_svg_files() {
+    let server = MockServer::start().await;
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4"/></svg>"#;
+    Mock::given(method("POST"))
+        .and(path("/v1/svgs/generations"))
+        .and(header("authorization", "Bearer q-key"))
+        .and(body_partial_json(json!({
+            "model": "arrow-2",
+            "prompt": "a fox logo",
+            "references": [{"base64": png_b64()}],
+            "instructions": "two colours"
+        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"data": [{"svg": svg, "mime_type": "image/svg+xml"}]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let home = tempfile::tempdir().unwrap();
+    let app = app(
+        home.path(),
+        &format!(
+            "[providers.quiver]\ntype = \"quiver\"\nbase_url = \"{}/v1\"\napi_key = \"q-key\"",
+            server.uri()
+        ),
+    )
+    .await;
+
+    let mut request = args("a fox logo", "quiver", home.path());
+    request.input_images = vec![format!("data:image/png;base64,{}", png_b64())];
+    request.settings.extra = json!({"instructions": "two colours"})
+        .as_object()
+        .cloned()
+        .unwrap();
+    request.settings.aspect_ratio = Some("1:1".into());
+    let outcome = app.generate(request).await.unwrap();
+
+    let saved = saved_path(&outcome.images[0]);
+    assert_eq!(saved.extension().unwrap(), "svg");
+    assert_eq!(std::fs::read_to_string(saved).unwrap(), svg);
+    assert_eq!(outcome.images[0].mime_type, "image/svg+xml");
+    assert_eq!(outcome.ignored_settings, vec![Setting::AspectRatio]);
+}

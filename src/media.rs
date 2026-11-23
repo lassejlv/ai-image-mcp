@@ -40,7 +40,7 @@ pub async fn load_input(http: &reqwest::Client, source: &str) -> anyhow::Result<
 
 fn to_input(data: Vec<u8>, declared: Option<&str>, origin: &str) -> anyhow::Result<InputImage> {
     let Some(mime_type) = sniff_mime(&data).or(declared.filter(|m| m.starts_with("image/"))) else {
-        bail!("{origin} is not a PNG, JPEG, WebP or GIF image");
+        bail!("{origin} is not a PNG, JPEG, WebP, GIF or SVG image");
     };
     Ok(InputImage {
         data,

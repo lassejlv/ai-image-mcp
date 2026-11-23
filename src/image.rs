@@ -27,7 +27,7 @@ pub enum Background {
     Auto,
 }
 
-/// Encoded file format of the generated image.
+/// Encoded file format of the generated image (raster providers; Quiver always returns SVG).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputFormat {
@@ -231,6 +231,9 @@ impl GeneratedImage {
 
 /// Detects common image formats from their magic bytes.
 pub fn sniff_mime(data: &[u8]) -> Option<&'static str> {
+    if is_svg(data) {
+        return Some("image/svg+xml");
+    }
     match data {
         [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
         [0xFF, 0xD8, 0xFF, ..] => Some("image/jpeg"),
@@ -254,12 +257,27 @@ pub fn sniff_mime(data: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// SVG is text, so it is recognised by an `<svg` root near the start, after any XML
+/// declaration, comments, or whitespace.
+fn is_svg(data: &[u8]) -> bool {
+    let head = &data[..data.len().min(1024)];
+    std::str::from_utf8(head)
+        .ok()
+        .or_else(|| head.utf8_chunks().next().map(|c| c.valid()))
+        .is_some_and(|text| {
+            let text = text.trim_start_matches('\u{feff}').trim_start();
+            (text.starts_with("<svg") || text.starts_with("<?xml") || text.starts_with("<!--"))
+                && text.contains("<svg")
+        })
+}
+
 /// File extension for an image MIME type.
 pub fn extension_for(mime_type: &str) -> &'static str {
     match mime_type {
         "image/jpeg" | "image/jpg" => "jpg",
         "image/webp" => "webp",
         "image/gif" => "gif",
+        "image/svg+xml" => "svg",
         _ => "png",
     }
 }
@@ -314,6 +332,15 @@ mod tests {
         assert_eq!(sniff_mime(b"\x89PNG\r\n"), Some("image/png"));
         assert_eq!(sniff_mime(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
         assert_eq!(sniff_mime(b"RIFF\0\0\0\0WEBPVP8"), Some("image/webp"));
+        assert_eq!(
+            sniff_mime(b"<?xml version=\"1.0\"?>\n<svg xmlns=\"x\"/>"),
+            Some("image/svg+xml")
+        );
+        assert_eq!(
+            sniff_mime(b"  <svg viewBox=\"0 0 1 1\"></svg>"),
+            Some("image/svg+xml")
+        );
+        assert_eq!(sniff_mime(b"<html><svg/></html>"), None);
         assert_eq!(sniff_mime(b"hello"), None);
     }
 }

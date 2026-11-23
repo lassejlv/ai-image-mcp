@@ -211,9 +211,10 @@ impl ProviderConfig {
         let allowed: &[AuthMode] = match self.kind {
             ProviderKind::Xai => &[AuthMode::Auto, AuthMode::Oauth, AuthMode::ApiKey],
             ProviderKind::Codex => &[AuthMode::Auto, AuthMode::Oauth, AuthMode::CodexCli],
-            ProviderKind::OpenAi | ProviderKind::Gemini | ProviderKind::Fal => {
-                &[AuthMode::Auto, AuthMode::ApiKey]
-            }
+            ProviderKind::OpenAi
+            | ProviderKind::Gemini
+            | ProviderKind::Fal
+            | ProviderKind::Quiver => &[AuthMode::Auto, AuthMode::ApiKey],
         };
         if !allowed.contains(&self.auth) {
             bail!(
@@ -249,7 +250,7 @@ mod tests {
     #[test]
     fn empty_config_offers_every_builtin_provider() {
         let names: Vec<String> = Config::default().provider_configs().into_keys().collect();
-        assert_eq!(names, ["xai", "codex", "openai", "gemini", "fal"]);
+        assert_eq!(names, ["xai", "codex", "openai", "gemini", "fal", "quiver"]);
     }
 
     #[test]
